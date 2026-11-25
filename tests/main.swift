@@ -4,6 +4,7 @@
 import AppKit
 import CloudKit
 import Darwin
+import Network
 
 // MARK: harness
 
@@ -932,6 +933,78 @@ final class FakeDevice: CloudDatabase, @unchecked Sendable {
         eq(server.records.count, 5); check(a.sync.idle)
     }
 
+    await agroup("Sync: a newer text that has not come down blocks uploads and deletes of that note") {
+        let server = FakeServer()
+        let a = Device(server), b = Device(server)
+        let n = a.lib.newNote(); edit(a.lib, n, NSRange(location: 0, length: 0), "line one\nline two\n"); endEvent()
+        await settle([a, b])
+        let nb = b.lib.note(id: n.id)!
+        // B edits offline; A changes another line; its text then fails to come down to B.
+        b.db.accountState = .unavailable
+        edit(b.lib, nb, NSRange(location: 0, length: 4), "LINE"); await b.run()
+        edit(a.lib, n, NSRange(location: 9, length: 4), "LINE"); await a.run()
+        server.assetLimit = 5
+        b.db.accountState = .available(userID: "user-1"); NotificationCenter.default.post(name: .CKAccountChanged, object: nil)
+        await b.run()
+        eq(server.records[n.id]?.text, "line one\nLINE two\n", "B's upload waited: A's text not overwritten")
+        // B deletes it meanwhile: the delete waits too.
+        b.lib.delete([nb]); endEvent(); await b.run()
+        check(server.records[n.id] != nil, "not deleted unseen")
+        server.assetLimit = .max
+        await settle([a, b])
+        eq(b.lib.note(id: n.id)?.text, "line one\nLINE two\n", "A's change wins over the delete it had not seen")
+        // And without the delete: an unsynced edit merges once the text comes.
+        let m = a.lib.newNote(); edit(a.lib, m, NSRange(location: 0, length: 0), "a\nb\n"); endEvent()
+        await settle([a, b])
+        let mb = b.lib.note(id: m.id)!
+        b.db.accountState = .unavailable
+        edit(b.lib, mb, NSRange(location: 0, length: 1), "A"); await b.run()
+        edit(a.lib, m, NSRange(location: 2, length: 1), "B"); await a.run()
+        server.assetLimit = 1
+        b.db.accountState = .available(userID: "user-1"); NotificationCenter.default.post(name: .CKAccountChanged, object: nil)
+        await b.run()
+        eq(server.records[m.id]?.text, "a\nB\n")
+        server.assetLimit = .max
+        await settle([a, b])
+        eq(mb.text, "A\nB\n"); eq(server.records[m.id]?.text, "A\nB\n")
+    }
+
+    await agroup("Sync: impossible numbers from iCloud are not taken") {
+        let server = FakeServer()
+        let dir = tempDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        let a = Device(server)
+        let n = a.lib.newNote(); edit(a.lib, n, NSRange(location: 0, length: 0), "x"); await a.run()
+        let b = Device(server, dir: dir)
+        await settle([b])
+        for bad in [Double.infinity, -.infinity, .nan, 1e300] {
+            server.records[n.id]!.position = bad
+            server.records[n.id]!.created = Date(timeIntervalSinceReferenceDate: .nan)
+            server.records[n.id]!.modified = Date(timeIntervalSinceReferenceDate: .infinity)
+            server.version[n.id]! += 1; server.records[n.id]!.tag = "v\(server.version[n.id]!)"; server.bump(n.id)
+            b.sync.fetchNow(); await b.run()
+            let nb = b.lib.note(id: n.id)!
+            check(nb.position.isFinite && nb.created.timeIntervalSinceReferenceDate.isFinite && nb.modified.timeIntervalSinceReferenceDate.isFinite, "\(bad)")
+            b.lib.flush()   // writing notes.json must not stop the process
+        }
+        // A note new to this device with such numbers: placed last, dated now.
+        let fresh = UUID()
+        server.records[fresh] = CloudNote(id: fresh, title: "Odd", created: Date(timeIntervalSinceReferenceDate: .nan), modified: .distantFuture,
+                                          position: .nan, renamed: true, text: "odd", meta: Data("v1".utf8), tag: "v1")
+        server.version[fresh] = 1; server.bump(fresh)
+        b.sync.fetchNow(); await b.run()
+        let o = b.lib.note(id: fresh)!
+        check(o.position.isFinite && o.modified < Date().addingTimeInterval(60)); eq(b.lib.notes.last?.id, fresh)
+        b.lib.flush()
+        // notes.json with impossible numbers (written by anything) loads repaired.
+        var root = try! JSONSerialization.jsonObject(with: Data(contentsOf: dir.appendingPathComponent("notes.json"))) as! [String: Any]
+        var list = root["notes"] as! [[String: Any]]
+        list[0]["position"] = 1e300; list[0]["created"] = -1e300
+        root["notes"] = list
+        try! JSONSerialization.data(withJSONObject: root).write(to: dir.appendingPathComponent("notes.json"))
+        let l = Library(store: Store(dir: dir))
+        check(l.notes.allSatisfy { abs($0.position) <= 1e12 && $0.created.timeIntervalSinceReferenceDate >= 0 }); l.flush()
+    }
+
     await agroup("Sync: a deletion from the server is checked before a note goes") {
         let server = FakeServer()
         let a = Device(server), b = Device(server)
@@ -1189,6 +1262,35 @@ func card(_ text: String, points: CGFloat = 26) -> CGImage {
         let t2 = Date(); _ = await Paste.recognize(got); print("    again: \(ms(t2))")
         // A picture with no text: nothing to put in.
         eq(await Paste.recognize(card(" ")), "")
+        // HTML is read offline: nothing it names is fetched (a listener counts any connection).
+        let listener = try! NWListener(using: .tcp, on: .any)
+        final class Count: @unchecked Sendable { var n = 0 }
+        let hits = Count()
+        listener.newConnectionHandler = { c in hits.n += 1; c.cancel() }
+        listener.start(queue: .global())
+        for _ in 0..<100 where listener.port == nil || listener.port!.rawValue == 0 { try? await Task.sleep(nanoseconds: 10_000_000) }
+        let port = listener.port!.rawValue
+        let page = """
+            <!DOCTYPE html><html><head><title>T</title><link rel=stylesheet href="http://127.0.0.1:\(port)/a.css">
+            <style>body{background:url(http://127.0.0.1:\(port)/bg.png)} @import url(http://127.0.0.1:\(port)/b.css);</style>
+            <script src="http://127.0.0.1:\(port)/s.js"></script></head>
+            <body><h1>Title &amp; more</h1><p>Hello   <b>web</b>&nbsp;page.<br>Line&#160;two &#x2014; &laquo;ok&raquo;</p>
+            <img src="http://127.0.0.1:\(port)/x.png" srcset="http://127.0.0.1:\(port)/y.png 2x"><!-- a comment -->
+            <ul><li>one</li><li>two</li></ul><ol start="3"><li>three</li><li>four</li></ol>
+            <table><tr><td>a</td><td>b</td></tr><tr><td>c</td><td>d</td></tr></table>
+            <pre>  keep   spaces
+            here</pre><iframe src="http://127.0.0.1:\(port)/f.html"></iframe><video src="http://127.0.0.1:\(port)/v.mp4"></video></body></html>
+            """
+        pb.clearContents(); pb.setData(Data(page.utf8), forType: .html)
+        guard case .text(let got) = Paste.content(of: pb) else { check(false, "html"); return }
+        let archive = try! PropertyListSerialization.data(fromPropertyList: ["WebMainResource": ["WebResourceData": Data(page.utf8),
+            "WebResourceURL": "http://127.0.0.1:\(port)/", "WebResourceMIMEType": "text/html"]], format: .binary, options: 0)
+        pb.clearContents(); pb.setData(archive, forType: NSPasteboard.PasteboardType("com.apple.webarchive"))
+        eq(Paste.content(of: pb), .text(got), "a web archive reads as its page")
+        try? await Task.sleep(nanoseconds: 1_500_000_000)
+        eq(hits.n, 0, "no connection made")
+        listener.cancel()
+        eq(got, "Title & more\nHello web page.\nLine two — «ok»\n• one\n• two\n3. three\n4. four\na\tb\nc\td\n  keep   spaces\nhere")
         // Something with no text form at all.
         pb.clearContents(); pb.setData(Data([0xFF, 0x00, 0xFE]), forType: NSPasteboard.PasteboardType("com.example.binary"))
         eq(Paste.content(of: pb), nil)

@@ -267,6 +267,10 @@ private struct Parked {
                 v = have
             } else {
                 views[note.id]?.detach()
+                // One layout manager per storage, ever: a view left over (the note was deleted while open and came back
+                // by ⌘Z) would otherwise lay the same text out again on every edit and resize, one more time per
+                // delete-and-undo (measured: one more after each ⌘A ⌘⌫ ⌘Z).
+                for lm in note.storage.layoutManagers { note.storage.removeLayoutManager(lm) }
                 v = NoteView(storage: note.storage, editor: self)
                 v.note = note
                 views[note.id] = v
@@ -283,7 +287,8 @@ private struct Parked {
             // The note left goes out of the window, not just out of sight: a hidden view still follows every live
             // resize, and a big note's text rewrapped on each frame of it (his 1 M-character paste, 2026-11-25).
             current?.scroll.removeFromSuperview()
-            if current?.note == nil, let c = current, c !== v { c.detach() }
+            // A view no longer kept (its note was deleted while it was open, or it is the empty editor) is taken apart.
+            if let c = current, c !== v, c.note == nil || !views.values.contains(where: { $0 === c }) { c.detach() }
             if v.scroll.superview !== view {
                 v.scroll.frame = textFrame
                 view.addSubview(v.scroll)

@@ -147,28 +147,18 @@ enum Paste {
         urls.map { $0.standardizedFileURL.path }.joined(separator: "\n")
     }
 
-    /// The plain string of rich text; attachments (U+FFFC) leave no mark.
+    /// The plain string of rich text; attachments (U+FFFC) leave no mark. HTML and web archives are read by HTMLText,
+    /// never by NSAttributedString's HTML import (WebKit, which may fetch what the page names); RTF and RTFD name
+    /// nothing remote.
     static func plain(_ data: Data, _ type: String) -> String? {
+        let ut = UTType(type)
+        if type == "com.apple.webarchive" || ut?.conforms(to: .webArchive) == true { return HTMLText.webArchiveText(data) }
+        if type == "public.html" || ut?.conforms(to: .html) == true { return HTMLText.text(data) }
         let docType: NSAttributedString.DocumentType
-        switch type {
-        case "com.apple.flat-rtfd": docType = .rtfd
-        case "public.rtf": docType = .rtf
-        case "public.html": docType = .html
-        case "com.apple.webarchive":
-            #if os(macOS)
-            docType = .webArchive
-            #else
-            return nil
-            #endif
-        default:
-            if UTType(type)?.conforms(to: .rtf) == true { docType = .rtf }
-            else if UTType(type)?.conforms(to: .html) == true { docType = .html }
-            else if UTType(type)?.conforms(to: .rtfd) == true || UTType(type)?.conforms(to: .flatRTFD) == true { docType = .rtfd }
-            else { return nil }
-        }
-        // HTML is parsed without WebKit's network and scripts: only text is wanted.
-        guard let a = try? NSAttributedString(data: data, options: [.documentType: docType, .characterEncoding: String.Encoding.utf8.rawValue],
-                                              documentAttributes: nil) else { return nil }
+        if type == "com.apple.flat-rtfd" || ut?.conforms(to: .rtfd) == true || ut?.conforms(to: .flatRTFD) == true { docType = .rtfd }
+        else if type == "public.rtf" || ut?.conforms(to: .rtf) == true { docType = .rtf }
+        else { return nil }
+        guard let a = try? NSAttributedString(data: data, options: [.documentType: docType], documentAttributes: nil) else { return nil }
         return a.string.replacingOccurrences(of: "\u{FFFC}", with: "")
     }
 

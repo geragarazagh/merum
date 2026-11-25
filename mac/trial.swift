@@ -360,6 +360,9 @@ import Carbon.HIToolbox
             "settings": app.settings?.panel.isVisible ?? false,
             "footprintMB": footprintMB(),
             "counter": m.editor.counter.stringValue,
+            "editorSubviews": m.editor.view.subviews.count,
+            "layoutManagers": lib.notes.reduce(0) { $0 + $1.storage.layoutManagers.count },
+            "tableRows": m.list.table.numberOfRows,
         ]
         if let s = Saver.folder { o["saved"] = (try? FileManager.default.contentsOfDirectory(atPath: s.path))?.sorted() ?? [] }
         return o

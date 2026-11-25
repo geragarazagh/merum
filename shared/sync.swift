@@ -375,16 +375,19 @@ protocol CloudDatabase: AnyObject {
     /// A record from the server: a new note, a change to one, or this device's own upload coming back.
     func receive(_ r: CloudNote) async {
         let knownTag = tags[r.id]
-        metas[r.id] = r.meta; tags[r.id] = r.tag
         guard let remote = r.text else {
-            // Never applied without its text: an empty text here would read as «everything deleted».
+            // Never applied without its text: an empty text here would read as «everything deleted». Nor is its
+            // version taken: with the newer change tag an upload or a delete from here would pass CloudKit's check and
+            // overwrite or remove a text this device never merged. The record is fetched again on its own.
             missing.insert(r.id)
             return
         }
+        metas[r.id] = r.meta; tags[r.id] = r.tag
+        let position = Sync.sane(r.position), created = Sync.sane(r.created), modified = Sync.sane(r.modified)
         if let n = library.note(id: r.id) {
             let fieldsDirty = dirtyFields.contains(r.id)
             if !fieldsDirty {
-                library.updateRemote(n, title: r.title, renamed: r.renamed, created: r.created, modified: nil, position: r.position,
+                library.updateRemote(n, title: r.title, renamed: r.renamed, created: created, modified: nil, position: position,
                                      pinned: r.pinned)
             }
             let local = n.textSnapshot
@@ -400,7 +403,7 @@ protocol CloudDatabase: AnyObject {
                 library.applyRemote(n, text: remote, modified: nil)
             }
             if !fieldsDirty && !dirtyText.contains(r.id) {
-                library.updateRemote(n, title: nil, renamed: nil, created: nil, modified: r.modified, position: nil)
+                library.updateRemote(n, title: nil, renamed: nil, created: nil, modified: modified, position: nil)
             }
         } else if deletes.contains(r.id) {
             // Deleted here and not yet sent. If another device changed it since this one last saw it, the change
@@ -470,8 +473,21 @@ protocol CloudDatabase: AnyObject {
     }
 
     private func note(from r: CloudNote, text: NSString) -> Note {
-        Note(id: r.id, title: r.title.isEmpty ? library.freeName() : r.title, created: r.created, modified: r.modified,
-             position: r.position, renamed: r.renamed, pinned: r.pinned, storage: NSTextStorage(string: text as String))
+        let now = Date()
+        let created = Sync.sane(r.created) ?? now
+        return Note(id: r.id, title: r.title.isEmpty ? library.freeName() : r.title, created: created,
+                    modified: Sync.sane(r.modified) ?? created,
+                    position: Sync.sane(r.position) ?? (library.notes.map(\.position).max() ?? 0) + 1,
+                    renamed: r.renamed, pinned: r.pinned, storage: NSTextStorage(string: text as String))
+    }
+
+    /// Numbers from the server are checked before use: a record written by any build, or broken, must not reach the
+    /// list or notes.json (a non-finite number there stops the process at every write, on every device). A position
+    /// must be finite and within ±10¹²; a date between 2001 and a year from now. nil: keep what is here.
+    nonisolated static func sane(_ p: Double) -> Double? { p.isFinite && abs(p) <= 1e12 ? p : nil }
+    nonisolated static func sane(_ d: Date) -> Date? {
+        let t = d.timeIntervalSinceReferenceDate
+        return t.isFinite && t >= 0 && d < Date().addingTimeInterval(366 * 86400) ? d : nil
     }
 
     // MARK: up
@@ -479,7 +495,8 @@ protocol CloudDatabase: AnyObject {
     private func upload() async throws {
         var batchLimit = 200
         while true {
-            let ids = Array(dirtyText.union(dirtyFields)).filter { library.note(id: $0) != nil }
+            // A note whose newer server text has not come down yet waits: sending now could overwrite it unmerged.
+            let ids = Array(dirtyText.union(dirtyFields)).filter { library.note(id: $0) != nil && !missing.contains($0) }
             let dels = Array(deletes)
             if ids.isEmpty && dels.isEmpty { return }
             // Batches by count and by the bytes of the texts inside the records.
@@ -670,7 +687,7 @@ final class CloudKitDatabase: CloudDatabase, @unchecked Sendable {
                 if case .success(let m) = result, let n = Self.note(m.record) { out.changed.append(n) }
             }
             out.deleted = r.deletions.compactMap { UUID(uuidString: $0.recordID.recordName) }
-            out.token = try? NSKeyedArchiver.archivedData(withRootObject: r.changeToken, requiringSecureCoding: true)
+            out.token = try? NSKeyedArchiver.archivedData(withRootObject: r.changeToken, requiringSecureCoding: true)   // nosemgrep (CloudKit's server change token, not a secret)
             out.more = r.moreComing
             return out
         } catch {
@@ -806,7 +823,7 @@ final class CloudKitDatabase: CloudDatabase, @unchecked Sendable {
 @MainActor final class SettingsSync {
     let library: Library
     private var store: NSUbiquitousKeyValueStore?
-    static let key = "settings"
+    static let key = "settings"   // nosemgrep (the name of a settings key, not a secret)
 
     init(library: Library) { self.library = library }
 

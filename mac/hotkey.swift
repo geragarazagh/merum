@@ -23,8 +23,8 @@ struct Shortcut: Equatable {
         return Shortcut(key: d.integer(forKey: "hotKeyCode"), mods: d.integer(forKey: "hotKeyMods"))
     }
     func save() {
-        UserDefaults.standard.set(key, forKey: "hotKeyCode")
-        UserDefaults.standard.set(mods, forKey: "hotKeyMods")
+        UserDefaults.standard.set(key, forKey: "hotKeyCode")   // nosemgrep (a shortcut key code in the app's own defaults, not a secret)
+        UserDefaults.standard.set(mods, forKey: "hotKeyMods")   // nosemgrep (a shortcut key code in the app's own defaults, not a secret)
     }
 
     init(key: Int, mods: Int) { self.key = key; self.mods = mods }

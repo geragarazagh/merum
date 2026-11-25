@@ -150,12 +150,15 @@ import UIKit
     }
 
     private func metaData(_ library: Library, removing: Set<UUID>) -> Data {
+        // JSONSerialization stops the process on a non-finite number (an Objective-C exception, which try? does not
+        // catch): every number is made finite before it gets there.
+        func f(_ x: Double) -> Double { x.isFinite ? x : 0 }
         let list: [[String: Any]] = library.notes.map { n in
-            ["id": n.id.uuidString, "title": n.title, "created": n.created.timeIntervalSince1970,
-             "modified": n.modified.timeIntervalSince1970, "position": n.position, "renamed": n.renamed, "pinned": n.pinned]
+            ["id": n.id.uuidString, "title": n.title, "created": f(n.created.timeIntervalSince1970),
+             "modified": f(n.modified.timeIntervalSince1970), "position": f(n.position), "renamed": n.renamed, "pinned": n.pinned]
         }
         var root: [String: Any] = ["version": 1, "sort": library.sort.rawValue, "ascending": library.ascending,
-                                   "textSize": library.textSize, "settingsModified": library.settingsModified, "notes": list,
+                                   "textSize": library.textSize, "settingsModified": f(library.settingsModified), "notes": list,
                                    "removing": removing.map(\.uuidString)]
         if let open = library.lastOpen { root["lastOpen"] = open.uuidString }
         return (try? JSONSerialization.data(withJSONObject: root, options: [.sortedKeys])) ?? Data()
@@ -184,10 +187,10 @@ import UIKit
             guard let d = e as? [String: Any], let id = (d["id"] as? String).flatMap(UUID.init(uuidString:)),
                   !listed.contains(id), !removing.contains(id) else { continue }
             listed.insert(id)
-            func date(_ k: String) -> Date? { (d[k] as? Double).flatMap { $0.isFinite ? Date(timeIntervalSince1970: $0) : nil } }
+            func date(_ k: String) -> Date? { (d[k] as? Double).flatMap { $0.isFinite ? Sync.sane(Date(timeIntervalSince1970: $0)) : nil } }
             entries.append(Entry(id: id, title: (d["title"] as? String).flatMap { $0.isEmpty ? nil : $0 },
                                  created: date("created"), modified: date("modified"),
-                                 position: (d["position"] as? Double).flatMap { $0.isFinite ? $0 : nil },
+                                 position: (d["position"] as? Double).flatMap(Sync.sane),
                                  renamed: d["renamed"] as? Bool ?? false, pinned: d["pinned"] as? Bool ?? false))
         }
         // Files the list does not name.

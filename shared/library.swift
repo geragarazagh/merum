@@ -21,7 +21,7 @@ import UIKit
         case settings
     }
     nonisolated static let didChange = Notification.Name("MerumLibraryDidChange")
-    nonisolated static let changeKey = "change"
+    nonisolated static let changeKey = "change"   // nosemgrep (the name of a notification userInfo key, not a secret)
 
     /// Text size steps in percent: Reader's own steps without 85 and 115, so every step is a visible change.
     nonisolated static let textSizes = [50, 75, 100, 125, 150, 175, 200, 250, 300]

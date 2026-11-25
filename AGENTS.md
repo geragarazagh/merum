@@ -140,11 +140,17 @@ Keep both objects alive (the library holds them weakly).
   nothing unless the library's folder is `Store.defaultDirectory`: a copy run on a scratch folder (`--data`) must set
   `sync.anyFolder = true` before `start()` to sync on purpose, else it would fetch the person's notes and send its
   test deletions to every device.
+- Numbers from iCloud are checked (`Sync.sane`): a position must be finite and within ±10¹², a date between 2001 and a
+  year from now, else the local value stays (a new note goes last, dated now); notes.json is repaired the same way on
+  load and never gets a non-finite number. A record whose text did not come down keeps the note's old version: no
+  upload or delete of that note goes until the text has come and been merged.
 - `SettingsSync`: key-value store key `settings` = {t, sort, ascending, textSize}; the later edit wins.
 - `Paste`: `Paste.content(of: NSPasteboard / UIPasteboard) -> Paste.Content?` (`.text(String)` at once, or
   `.image(CGImage)` to read), `Paste.recognize(CGImage) async -> String` ("" when the picture has no text: beep),
   `Paste.text(from:) async -> String?` (both in one; nil: nothing that reads as text). Recognition is the OCR app's
-  pipeline (`Recognition`, shared/recognition.swift).
+  pipeline (`Recognition`, shared/recognition.swift). HTML and web archives are turned into text by
+  `HTMLText` (shared/html.swift), never by NSAttributedString's HTML import, which runs WebKit and may fetch what the
+  page names: nothing a paste names is ever requested.
 - A paste that waits (a picture read by Vision: ~0.4 s, over a minute the first time after a restart while Vision
   prepares its model): `await library.paste(content, into: note, replacing: selection) -> NSRange?` does it all; or
   `beginPaste(in:replacing:) -> PendingPaste`, then `finishPaste(_:with:)` / `cancelPaste(_:)`. Meanwhile the person
@@ -216,7 +222,9 @@ Keep both objects alive (the library holds them weakly).
   selection, rename, drag inside a group, delete, copy, search, animated rows; while a row is dragged the rows stay as
   they are and the move is made after the drag session ends: a change under it crashed AppKit, 2026-11-25 14:09:58;
   a right click on empty space offers New Note); `editor.swift` a TextKit 1 view per note (12 kept; a note left is
-  taken out of the window, not hidden, so live resize touches only the open one), edits reported to History, paste
+  taken out of the window, not hidden, so live resize touches only the open one; one layout manager per storage, ever:
+  a view of a note deleted while open and brought back by ⌘Z used to stay attached, one more after every ⌘A ⌘⌫ ⌘Z,
+  and every edit and resize laid the text out once more), edits reported to History, paste
   through Paste and `library.paste` for pictures, the counts line (`Facts.of`); `menu.swift`; `hotkey.swift` (default
   ⌥⌘M, `Shortcut.standard`); `settings.swift`; `save.swift`; `cli.swift`; `clipboard.swift`; `updates.swift`;
   `icon.swift` (`icon --document`); `trial.swift` scripted checks in ad hoc builds only, refused on the real notes
