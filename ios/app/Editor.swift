@@ -197,14 +197,14 @@ final class EditorContainer: UIView {
 
     // MARK: the caret, kept per note on this device
 
-    private static let caretKey = "caret"
+    private static let caretKey = "caret"   // nosemgrep (the name of a settings key, not a secret)
     /// Where each note's caret was, for the next launch (a view kept in memory remembers it by itself).
     func saveCarets() {
         var d = UserDefaults.standard.dictionary(forKey: Editors.caretKey) as? [String: Int] ?? [:]
         for (id, v) in views where library.note(id: id) != nil { d[id.uuidString] = v.selectedRange.location }
         let live = Set(library.notes.map(\.id.uuidString))
         d = d.filter { live.contains($0.key) }
-        UserDefaults.standard.set(d, forKey: Editors.caretKey)
+        UserDefaults.standard.set(d, forKey: Editors.caretKey)   // nosemgrep (each note's caret position on this device, not a secret)
     }
 
     private func savedCaret(_ note: Note) -> Int? {
