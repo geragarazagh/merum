@@ -1,0 +1,12 @@
+#!/bin/zsh
+# Makes Merum.xcodeproj for the iPhone app: the icon (the Mac's icon.swift, one picture for both), then XcodeGen.
+# Build with xcodebuild or Xcode after it, for example:
+#   xcodebuild -project Merum.xcodeproj -scheme Merum -destination 'platform=iOS Simulator,name=iPhone 18 Pro' build
+set -e
+cd "${0:A:h}"
+export DEVELOPER_DIR=${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}
+mkdir -p gen
+[ gen/icon -nt ../mac/icon.swift ] || swiftc -O -o gen/icon ../mac/icon.swift
+rm -rf gen/AppIcon.icon
+gen/icon --document gen/AppIcon.icon
+xcodegen generate --quiet

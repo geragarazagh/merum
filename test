@@ -1,0 +1,10 @@
+#!/bin/zsh
+# Tests of the shared core (tests/main.swift says what each covers), on the Mac without Xcode's UI, iCloud or a window.
+#   ./test          every test
+#   ./test bench    load, save, typing, undo, diff and merge timings and memory on bench/ (~/.local/share/merum/bench)
+# The binary is built with -O, as the app is, so the timings mean something.
+set -e
+cd "${0:A:h}"
+t=${TMPDIR:-/tmp}/merum-tests
+swiftc -O -target arm64-apple-macos13 -o "$t" tests/main.swift shared/*.swift
+"$t" "$@"

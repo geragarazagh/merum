@@ -1,0 +1,13 @@
+# The team's Developer ID provisioning profile (iCloud); made once, kept beside the source, out of git.
+Merum.provisionprofile
+# Build products: the app, Sparkle (fetched and checked by hash at every build), release files.
+Merum.app/
+vendor/
+*.dmg
+.release
+appcast.xml
+.DS_Store
+Merum Test.app/
+# The iPhone project and what ios/make generates for it (icon document, Info.plist, entitlements; project.yml is the source).
+ios/Merum.xcodeproj/
+ios/gen/
