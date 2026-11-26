@@ -37,13 +37,13 @@ struct Row: Identifiable, Hashable {
     private(set) var canUndo = false
     private(set) var canRedo = false
     /// The open note's characters, words and tokens (counted off the main thread; nil while counting).
-    private(set) var facts: Facts? { didSet { editors?.showFacts(factsLine) } }
-    var factsLine: String { facts.map { $0.lines.joined(separator: " · ") } ?? " " }
+    private(set) var facts: Facts? { didSet { editors?.showFacts(facts) } }
     @ObservationIgnored private var factsTask: Task<Void, Never>?
     /// The list's search: names and texts that contain it (case and diacritics ignored).
     var query = "" { didSet { if query != oldValue { search() } } }
     private(set) var found: Set<UUID>?
     @ObservationIgnored private var searchTask: Task<Void, Never>?
+    private(set) var textSize: Int
     private(set) var sort: Library.Sort
     private(set) var ascending: Bool
 
@@ -53,6 +53,7 @@ struct Row: Identifiable, Hashable {
         self.library = library
         sort = library.sort
         ascending = library.ascending
+        textSize = library.textSize
         editors = Editors(model: self)
         refreshRows()
         // Opens straight on the last note open, always.
@@ -66,10 +67,10 @@ struct Row: Identifiable, Hashable {
             MainActor.assumeIsolated { self?.changed(change) }
         })
         observers.append(nc.addObserver(forName: UIResponder.keyboardWillShowNotification, object: nil, queue: nil) { [weak self] _ in
-            MainActor.assumeIsolated { self?.keyboardUp = true }
+            MainActor.assumeIsolated { self?.keyboardUp = true; self?.editors.keyboard(up: true) }
         })
         observers.append(nc.addObserver(forName: UIResponder.keyboardWillHideNotification, object: nil, queue: nil) { [weak self] _ in
-            MainActor.assumeIsolated { self?.keyboardUp = false }
+            MainActor.assumeIsolated { self?.keyboardUp = false; self?.editors.keyboard(up: false) }
         })
         for name in [UITextField.textDidEndEditingNotification, UITextView.textDidEndEditingNotification] {
             observers.append(nc.addObserver(forName: name, object: nil, queue: nil) { [weak self] _ in
@@ -77,8 +78,10 @@ struct Row: Identifiable, Hashable {
             })
         }
         let um = library.history.undoManager
+        // Not NSUndoManagerCheckpoint: reading canUndo or canRedo posts it, so listening to it looped for ever (a
+        // spinning main thread, found by the stress pass 2026-11-25).
         for name in [Notification.Name.NSUndoManagerDidCloseUndoGroup, .NSUndoManagerDidUndoChange,
-                     .NSUndoManagerDidRedoChange, .NSUndoManagerCheckpoint] {
+                     .NSUndoManagerDidRedoChange] {
             observers.append(nc.addObserver(forName: name, object: um, queue: nil) { [weak self] _ in
                 MainActor.assumeIsolated { self?.undoChanged() }
             })
@@ -92,11 +95,15 @@ struct Row: Identifiable, Hashable {
         })
     }
 
+    @ObservationIgnored private var undoReadPending = false
     private func undoChanged() {
         let um = library.history.undoManager
-        // The manager posts mid-step too; read it once the step has settled.
+        // The manager posts mid-step too; read it once the step has settled, at most once a turn of the run loop.
+        guard !undoReadPending else { return }
+        undoReadPending = true
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
+            self.undoReadPending = false
             if self.canUndo != um.canUndo { self.canUndo = um.canUndo }
             if self.canRedo != um.canRedo { self.canRedo = um.canRedo }
         }
@@ -158,7 +165,16 @@ struct Row: Identifiable, Hashable {
 
     /// Shows a note in the editor; the note left behind goes if it is empty and was never named (Library.leave).
     func show(_ note: Note) {
-        if let o = open, o !== note { library.leave(o) }
+        if let o = open, o !== note {
+            // An undo or redo that brings another note forward must not drop the note left behind mid-step: dropping
+            // it removes its undo steps while the manager is undoing (the stress pass hung in History's undo loop).
+            let um = library.history.undoManager
+            if um.isUndoing || um.isRedoing {
+                DispatchQueue.main.async { [weak self] in self?.library.leave(o) }
+            } else {
+                library.leave(o)
+            }
+        }
         editors.focusNext = true
         open = note
         draft = nil
@@ -282,6 +298,7 @@ struct Row: Identifiable, Hashable {
         case .settings:
             sort = library.sort
             ascending = library.ascending
+            textSize = library.textSize
             editors.applyTextSize()
         case .text, nil:
             break

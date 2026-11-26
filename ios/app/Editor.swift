@@ -55,35 +55,28 @@ final class EditorContainer: UIView {
     /// An edit was reported to the History and its storage change has not arrived yet.
     private var reported = false
 
-    /// The bar over the keyboard while typing, where Notes keeps its bottom bar then: a system toolbar, so New Note is
-    /// a standard bar item at Apple's own size (a custom SwiftUI button there was smaller and shrank when pressed),
-    /// and the counter centred between it and an invisible twin on the left.
-    private(set) lazy var accessory: UIToolbar = {
-        let bar = UIToolbar(frame: CGRect(x: 0, y: 0, width: 320, height: 52))
-        bar.autoresizingMask = [.flexibleWidth]
-        bar.setBackgroundImage(UIImage(), forToolbarPosition: .any, barMetrics: .default)
-        bar.setShadowImage(UIImage(), forToolbarPosition: .any)
-        counterLabel.font = .preferredFont(forTextStyle: .caption1)
-        counterLabel.adjustsFontForContentSizeCategory = true
-        counterLabel.textColor = .secondaryLabel
-        counterLabel.textAlignment = .center
-        let counter = UIBarButtonItem(customView: counterLabel)
-        counter.hidesSharedBackground = true
-        let compose = UIBarButtonItem(image: UIImage(systemName: "square.and.pencil"),
-                                      primaryAction: UIAction { [weak self] _ in self?.model?.compose() })
-        compose.accessibilityLabel = "New Note"
-        let twin = UIBarButtonItem(customView: UIView(frame: CGRect(x: 0, y: 0, width: 44, height: 44)))
-        twin.hidesSharedBackground = true
-        bar.items = [twin, .flexibleSpace(), counter, .flexibleSpace(), compose]
-        return bar
-    }()
-    let counterLabel = UILabel()
+    /// The bar over the keyboard while typing, where Notes keeps its bottom bar then. A plain view, not a toolbar: a
+    /// toolbar folds what does not fit into an overflow «…», which once swallowed New Note (an extra tap). Here New
+    /// Note is a fixed 44-point glass button on the right, the size of the bars' own buttons, and the counter is
+    /// centred, held clear of it by constraints, in the longest of its forms that fits (KeyboardBar.fit).
+    private(set) lazy var accessory: KeyboardBar = KeyboardBar(compose: { [weak self] in self?.model?.compose() })
 
-    /// The counter's text in both bars, set in place (no relayout of the bar).
-    func showFacts(_ text: String) {
-        counterLabel.text = text
-        counterLabel.sizeToFit()
+    /// Room under the text for the bottom bar while the keyboard is down (the keyboard's own bar is counted by the
+    /// keyboard).
+    func keyboard(up: Bool) {
+        for v in views.values {
+            let b: CGFloat = up ? 0 : 56
+            if v.contentInset.bottom != b { v.contentInset.bottom = b; v.verticalScrollIndicatorInsets.bottom = b }
+        }
     }
+
+    func showFacts(_ facts: Facts?) {
+        accessory.facts = facts
+        bottomBar.facts = facts
+    }
+    /// The same bar at the bottom while the keyboard is down: one design in both places, and no toolbar to fold New
+    /// Note into «…».
+    private(set) lazy var bottomBar: KeyboardBar = KeyboardBar(compose: { [weak self] in self?.model?.compose() })
 
     init(model: Model) {
         self.model = model
@@ -144,6 +137,8 @@ final class EditorContainer: UIView {
         tv.undoProxy.textView = tv
         tv.typingAttributes = attributes
         tv.inputAccessoryView = accessory
+        tv.contentInset.bottom = (model?.keyboardUp ?? false) ? 0 : 56
+        tv.verticalScrollIndicatorInsets.bottom = tv.contentInset.bottom
         if let at = savedCaret(note), at <= st.length { tv.selectedRange = NSRange(location: at, length: 0) }
         views[note.id] = tv
         order.append(note.id)
@@ -403,7 +398,6 @@ final class NoteTextView: UITextView {
 
     override var undoManager: UndoManager? { undoProxy }
 
-
     // Text lines up with the navigation title: the system's minimum margin for the width class (16 pt compact,
     // 20 pt regular, as UIKit's systemMinimumLayoutMargins on iPhone) plus the safe area, less the line padding.
     // Computed here: SwiftUI's host views between the screen and this view do not pass layout margins down.
@@ -493,3 +487,103 @@ final class ForwardingUndoManager: UndoManager {
         tv?.inputDelegate?.selectionDidChange(tv)
     }
 }
+
+
+/// The counter over the keyboard and New Note. Whatever the count, width or text size, New Note keeps its place and
+/// size and the counter never reaches it.
+final class KeyboardBar: UIView {
+    private let label = UILabel()
+    private let button = UIButton(configuration: .glass())
+    var facts: Facts? { didSet { if facts != oldValue { update() } } }
+    private static let side: CGFloat = 16, gap: CGFloat = 8, size: CGFloat = 44
+
+    init(compose: @escaping () -> Void) {
+        super.init(frame: CGRect(x: 0, y: 0, width: 320, height: 56))
+        autoresizingMask = [.flexibleWidth]
+        backgroundColor = .clear
+        // The bar's text stops growing at the largest standard size, as the system bars' labels do.
+        maximumContentSizeCategory = .extraExtraExtraLarge
+        var c = UIButton.Configuration.glass()
+        // A fixed size, as the bars' own buttons keep theirs at every text size.
+        let symbol = UIImage.SymbolConfiguration(pointSize: 17, weight: .medium)
+        c.image = UIImage(systemName: "square.and.pencil", withConfiguration: symbol)
+        c.preferredSymbolConfigurationForImage = symbol
+        c.cornerStyle = .capsule
+        button.configuration = c
+        button.addAction(UIAction { _ in compose() }, for: .primaryActionTriggered)
+        button.accessibilityLabel = "New Note"
+        button.maximumContentSizeCategory = .large   // the glyph keeps the bars' buttons' size at every text size
+        label.font = KeyboardBar.font(for: traitCollection)
+        label.textColor = .secondaryLabel
+        label.textAlignment = .center
+        label.lineBreakMode = .byClipping
+        label.adjustsFontSizeToFitWidth = true   // the last resort, after the shorter forms
+        label.minimumScaleFactor = 0.5
+        for v in [label, button] as [UIView] { v.translatesAutoresizingMaskIntoConstraints = false; addSubview(v) }
+        let (side, gap, size) = (KeyboardBar.side, KeyboardBar.gap, KeyboardBar.size)
+        // Inside the safe area: on iPhone Duo's outer display the system bars stand at the right edge (84 points).
+        let safe = safeAreaLayoutGuide
+        NSLayoutConstraint.activate([
+            button.trailingAnchor.constraint(equalTo: safe.trailingAnchor, constant: -side),
+            button.centerYAnchor.constraint(equalTo: centerYAnchor),
+            button.widthAnchor.constraint(equalToConstant: size),
+            button.heightAnchor.constraint(equalToConstant: size),
+            label.centerYAnchor.constraint(equalTo: centerYAnchor),
+            label.leadingAnchor.constraint(greaterThanOrEqualTo: safe.leadingAnchor, constant: side),
+            label.trailingAnchor.constraint(lessThanOrEqualTo: button.leadingAnchor, constant: -gap),
+            // Symmetric room on the left, so a centred counter never runs under New Note's mirror image.
+            label.leadingAnchor.constraint(greaterThanOrEqualTo: safe.leadingAnchor, constant: side + size + gap)
+                .withPriority(.defaultHigh),
+            // Centred while it can be; never at the price of overlapping New Note.
+            label.centerXAnchor.constraint(equalTo: safe.centerXAnchor).withPriority(.defaultHigh),
+        ])
+        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    override var intrinsicContentSize: CGSize { CGSize(width: UIView.noIntrinsicMetric, height: 56) }
+    override func layoutSubviews() { super.layoutSubviews(); update() }
+    override func traitCollectionDidChange(_ previous: UITraitCollection?) { super.traitCollectionDidChange(previous); update() }
+    override func safeAreaInsetsDidChange() { super.safeAreaInsetsDidChange(); update() }
+
+    private func update() {
+        let room = safeAreaLayoutGuide.layoutFrame.width - 2 * (KeyboardBar.side + KeyboardBar.size + KeyboardBar.gap)
+        let font = KeyboardBar.font(for: traitCollection)
+        if label.font != font { label.font = font }
+        let text = KeyboardBar.fit(facts, width: room, font: font)
+        if label.text != text { label.text = text }
+        label.accessibilityLabel = facts.map(KeyboardBar.full)
+    }
+
+    /// The counter's font: caption at the person's text size, capped at the largest standard one.
+    static func font(for traits: UITraitCollection) -> UIFont {
+        let p = traits.preferredContentSizeCategory
+        let size: UIContentSizeCategory = p.isAccessibilityCategory ? .extraExtraExtraLarge : p
+        return .preferredFont(forTextStyle: .caption1, compatibleWith: UITraitCollection(preferredContentSizeCategory: size))
+    }
+
+    // MARK: the forms, longest first
+
+    static func full(_ f: Facts) -> String { f.lines.joined(separator: " · ") }
+    static func compact(_ f: Facts) -> String {
+        func c(_ n: Int) -> String { n.formatted(.number.notation(.compactName)) }
+        return "\(c(f.characters)) Characters · \(c(f.words)) Words · ≈\u{00A0}\(c(f.tokens)) Tokens"
+    }
+    static func short(_ f: Facts) -> String {
+        func c(_ n: Int) -> String { n.formatted(.number.notation(.compactName)) }
+        return "\(c(f.characters)) chars · \(c(f.words)) words · ≈\u{00A0}\(c(f.tokens)) tokens"
+    }
+    /// The longest form that fits the width at the font's own size; the shortest when none does (the label then
+    /// shrinks its font a little).
+    static func fit(_ f: Facts?, width: CGFloat, font: UIFont) -> String {
+        guard let f else { return " " }
+        let forms = [full(f), compact(f), short(f)]
+        return forms.first { ($0 as NSString).size(withAttributes: [.font: font]).width <= width } ?? forms.last!
+    }
+}
+
+private extension NSLayoutConstraint {
+    func withPriority(_ p: UILayoutPriority) -> NSLayoutConstraint { priority = p; return self }
+}
+
+

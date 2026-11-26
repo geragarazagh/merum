@@ -34,6 +34,9 @@ import UIKit
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
         _ = Merum.shared
+        #if DEBUG && targetEnvironment(simulator)
+        SimulatorModes.runIfAsked()
+        #endif
         #if MERUM_ICLOUD
         application.registerForRemoteNotifications()
         #if DEBUG

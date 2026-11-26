@@ -260,6 +260,22 @@ struct EditorScreen: View {
                     Button { model.editors.share() } label: { Label("Share", systemImage: "square.and.arrow.up") }
                         .disabled(model.facts?.characters == 0)
                     Menu {
+                        // Text size as Safari's Page Zoom: small A, the percentage (back to 100 %), big A; the menu
+                        // stays open while stepping, the text rewraps under it.
+                        ControlGroup {
+                            Button { model.editors.stepTextSize(-1) } label: {
+                                Label("Smaller", systemImage: "textformat.size.smaller")
+                            }
+                            .disabled(model.textSize <= Library.textSizes.first!)
+                            Button { model.editors.stepTextSize(0) } label: { Text("\(model.textSize)%") }
+                                .accessibilityLabel("Text Size \(model.textSize)%, Actual Size")
+                            Button { model.editors.stepTextSize(1) } label: {
+                                Label("Bigger", systemImage: "textformat.size.larger")
+                            }
+                            .disabled(model.textSize >= Library.textSizes.last!)
+                        }
+                        .controlGroupStyle(.compactMenu)
+                        .menuActionDismissBehavior(.disabled)
                         Button { model.editors.findInNote() } label: { Label("Find in Note", systemImage: "magnifyingglass") }
                         Button(role: .destructive) { model.deleteOpen() } label: { Label("Delete", systemImage: "trash") }
                     } label: {
@@ -271,22 +287,35 @@ struct EditorScreen: View {
                         Button("Done", systemImage: "checkmark", role: .confirm) { model.endEditing() }
                     }
                 }
-                // The counter where Notes keeps its bottom bar: live, plain secondary text in the middle, no glass.
-                // While typing the same bar rides on the keyboard, as Notes' does.
-                // An invisible twin of New Note on the left keeps the counter centred on the screen.
-                ToolbarItem(placement: .bottomBar) {
-                    Image(systemName: "square.and.pencil").hidden().accessibilityHidden(true)
-                }
-                .sharedBackgroundVisibility(.hidden)
-                ToolbarSpacer(.flexible, placement: .bottomBar)
-                ToolbarItem(placement: .bottomBar) { counter }
-                    .sharedBackgroundVisibility(.hidden)
-                ToolbarSpacer(.flexible, placement: .bottomBar)
-                ToolbarItem(placement: .bottomBar) {
-                    Button { model.compose() } label: { Label("New Note", systemImage: "square.and.pencil") }
+            }
+            // Keyboard down: the counter and New Note in the same fixed bar as over the keyboard (Editors.bottomBar), over
+            // the text with a fade behind it as a toolbar's edge. Keyboard up: the keyboard's own bar. An overlay leaves
+            // the safe areas as they are; the text view keeps room under its last line (Editors.keyboard(up:)).
+            .overlay(alignment: .bottom) {
+                if !model.keyboardUp {
+                    BarHost(bar: model.editors.bottomBar)
+                        .frame(height: 56)
+                        .background {
+                            // A 24-point fade above the bar, solid behind it and down to the screen's edge, so no text
+                            // shows through the counter.
+                            VStack(spacing: 0) {
+                                LinearGradient(colors: [Color(uiColor: .systemBackground).opacity(0), Color(uiColor: .systemBackground)],
+                                               startPoint: .top, endPoint: .bottom)
+                                    .frame(height: 24)
+                                Color(uiColor: .systemBackground)
+                            }
+                            .padding(.top, -24)
+                            .ignoresSafeArea(edges: .bottom)
+                        }
                 }
             }
     }
+}
+
+struct BarHost: UIViewRepresentable {
+    let bar: KeyboardBar
+    func makeUIView(context: Context) -> KeyboardBar { bar }
+    func updateUIView(_ v: KeyboardBar, context: Context) {}
 }
 
 /// Notes' dates in a row: the time today, «Yesterday», the weekday within a week, else the short date.
@@ -299,16 +328,6 @@ enum NoteDate {
             return d.formatted(.dateTime.weekday(.wide))
         }
         return d.formatted(date: .numeric, time: .omitted)
-    }
-}
-
-extension EditorScreen {
-    var counter: some View {
-        Text(model.factsLine)
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .lineLimit(1)
-            .fixedSize()
     }
 }
 
