@@ -33,8 +33,8 @@ extension Model {
                 if let n = open { show(n) } else { path = [.editor] }
             }
         }
+        if let c = current { editors.openAtEnd(c) }
         editors.focusNext = true
-        editors.caretToEnd = true
         editors.showCurrent()
     }
 }
