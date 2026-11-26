@@ -511,10 +511,11 @@ final class FieldEditor: NSTextView {
             MainActor.assumeIsolated {
                 guard !s.layoutManagers.contains(where: { $0.firstTextView is NoteTextView }) else { return }
                 s.removeAttribute(.writingDirection, range: s.editedRange)
-                // The find bar's field gets the same limit as ours, right after the paste (characters cannot change here).
+                // Typed text, and the find bar's own paste, get the same limit, right after the edit (characters cannot
+                // change here).
                 guard s.length > pasteLimit else { return }
                 DispatchQueue.main.async {
-                    guard let t = NSApp.keyWindow?.firstResponder as? NSTextView, t.isFieldEditor, !(t is FieldEditor),
+                    guard let t = NSApp.keyWindow?.firstResponder as? NSTextView, t.isFieldEditor,
                           t.textStorage === s, s.length > pasteLimit else { return }
                     let keep = (capped(s.string) as NSString).length
                     let cut = NSRange(location: keep, length: s.length - keep)
@@ -524,8 +525,8 @@ final class FieldEditor: NSTextView {
         }
     }
 
-    /// A field takes at most this many characters from one paste (a name, a query); the rest of a long clipboard is left
-    /// out. On macOS 26 the toolbar and the find bar measure a field's whole string on every layout pass (SwiftUI): 85,000
+    /// A field holds at most this many characters (a name, a query): the rest of a long paste is left out, typing past it
+    /// is cut back. On macOS 26 the toolbar and the find bar measure a field's whole string on every layout pass (SwiftUI): 85,000
     /// pasted characters held the main thread 1-3 s again and again in the monkey test.
     static let pasteLimit = 1_000
     static func capped(_ s: String) -> String { s.utf16.count <= pasteLimit ? s : String(s.prefix(pasteLimit)) }

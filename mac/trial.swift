@@ -455,6 +455,7 @@ import Carbon.HIToolbox
             "head": String(text.prefix(60)),
             "selection": t.map { NSStringFromRange($0.selectedRange()) } ?? "",
             "responder": fr.map { String(describing: type(of: $0)) } ?? "nil",
+            "fieldLength": (fr as? NSTextView).map { $0.isFieldEditor ? ($0.string as NSString).length : -1 } ?? -1,
             "listSelection": Array(m.list.table.selectedRowIndexes),
             "rows": m.list.rows.map { r -> String in if case .header(let h) = r { return "[" + h + "]" }; return r.note!.title },
             "lengths": lib.notes.map(\.length),
