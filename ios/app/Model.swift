@@ -31,6 +31,8 @@ struct Row: Identifiable, Hashable {
     var selecting = false { didSet { if !selecting { selection = [] } } }
     var selection = Set<UUID>()
     private(set) var keyboardUp = false
+    /// The list's bottom bar: off from launch until the list is first in front or a second has passed (ListScreen).
+    var listBarShown = false
     /// Counts text fields and views ending their editing (the rename field, a note): the list's undo responder takes
     /// over then.
     private(set) var editingEnded = 0
@@ -59,18 +61,37 @@ struct Row: Identifiable, Hashable {
         // Opens straight on the last note open, always.
         if let id = library.lastOpen, let n = library.note(id: id) { open = n } else { draft = makeDraft() }
         path = [.editor]
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.listBarShown = true }
         editors.focusNext = true
+        if let c = current {
+            editors.openAtEnd(c)
+            // Counted before the first frame, so the counter rises with the keyboard, never blank first.
+            facts = c.length < 50_000 ? Facts(c.storage.string) : nil
+            editors.showFacts(facts)   // observers do not run inside init
+            count(after: 0)
+        }
         library.history.reveal = { [weak self] note, range in self?.reveal(note, range) }
         let nc = NotificationCenter.default
         observers.append(nc.addObserver(forName: Library.didChange, object: library, queue: nil) { [weak self] n in
             let change = n.userInfo?[Library.changeKey] as? Library.Change
             MainActor.assumeIsolated { self?.changed(change) }
         })
-        observers.append(nc.addObserver(forName: UIResponder.keyboardWillShowNotification, object: nil, queue: nil) { [weak self] _ in
-            MainActor.assumeIsolated { self?.keyboardUp = true; self?.editors.keyboard(up: true) }
+        // Typing in a note, not the keyboard on screen: with the keyboard down the editor's bar is an input of its own
+        // (EditorDock), which UIKit also reports as a keyboard.
+        observers.append(nc.addObserver(forName: UITextView.textDidBeginEditingNotification, object: nil, queue: nil) { [weak self] n in
+            let note = n.object is NoteTextView
+            MainActor.assumeIsolated { if note { self?.keyboardUp = true } }
         })
-        observers.append(nc.addObserver(forName: UIResponder.keyboardWillHideNotification, object: nil, queue: nil) { [weak self] _ in
-            MainActor.assumeIsolated { self?.keyboardUp = false; self?.editors.keyboard(up: false) }
+        observers.append(nc.addObserver(forName: UITextView.textDidEndEditingNotification, object: nil, queue: nil) { [weak self] n in
+            let note = n.object is NoteTextView
+            MainActor.assumeIsolated { if note { self?.keyboardUp = false } }
+        })
+        // Posted inside the keyboard's animation, so the text's room changes along with it.
+        observers.append(nc.addObserver(forName: UIResponder.keyboardWillChangeFrameNotification, object: nil, queue: nil) { [weak self] n in
+            let end = (n.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?.cgRectValue
+            let duration = (n.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double) ?? 0.25
+            let curve = (n.userInfo?[UIResponder.keyboardAnimationCurveUserInfoKey] as? UInt) ?? 7
+            MainActor.assumeIsolated { if let end { self?.editors.keyboard(frame: end, duration: duration, curve: curve) } }
         })
         for name in [UITextField.textDidEndEditingNotification, UITextView.textDidEndEditingNotification] {
             observers.append(nc.addObserver(forName: name, object: nil, queue: nil) { [weak self] _ in
@@ -177,6 +198,7 @@ struct Row: Identifiable, Hashable {
         }
         editors.focusNext = true
         open = note
+        editors.openAtEnd(note)
         draft = nil
         library.lastOpen = note.id
         if path.isEmpty { path = [.editor] }
@@ -188,8 +210,7 @@ struct Row: Identifiable, Hashable {
     /// Back from the editor to the list.
     func leftEditor() {
         refreshRows()   // the edited note's time and first text
-        editors.endEditing()
-        editors.saveCarets()
+        editors.leave()
         // An empty note goes once the list is on screen, so its row is seen leaving, as in Notes; not if the person
         // came straight back to it.
         guard let o = open else { return }

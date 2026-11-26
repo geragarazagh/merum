@@ -13,6 +13,7 @@ struct RootView: View {
                 .navigationDestination(for: Route.self) { _ in EditorScreen() }
         }
         .onChange(of: model.path) { old, new in
+            if new.isEmpty { model.listBarShown = true }
             if new.isEmpty, !old.isEmpty { model.leftEditor() }
         }
         .background { UndoResponder(trigger: "\(model.path.count) \(model.keyboardUp) \(model.editingEnded)", active: !model.keyboardUp) }
@@ -123,10 +124,14 @@ struct ListScreen: View {
                 Label("More", systemImage: "ellipsis")
             }
         }
-        DefaultToolbarItem(kind: .search, placement: .bottomBar)
-        ToolbarSpacer(.flexible, placement: .bottomBar)
-        ToolbarItem(placement: .bottomBar) {
-            Button { model.compose() } label: { Label("New Note", systemImage: "square.and.pencil") }
+        // At launch straight into the editor SwiftUI drew this bottom bar (Search, New Note) over the editor for
+        // ~0.4 s: it joins once the list is first in front or the launch has settled (Model.listBarShown).
+        if model.listBarShown {
+            DefaultToolbarItem(kind: .search, placement: .bottomBar)
+            ToolbarSpacer(.flexible, placement: .bottomBar)
+            ToolbarItem(placement: .bottomBar) {
+                Button { model.compose() } label: { Label("New Note", systemImage: "square.and.pencil") }
+            }
         }
     }
 
@@ -232,7 +237,10 @@ struct EditorScreen: View {
 
     var body: some View {
         EditorHost(note: model.current?.id, editors: model.editors)
-            .ignoresSafeArea(.container, edges: [.top, .bottom])
+            // The whole screen, the keyboard's part too: the text view keeps its frame and gets room under its text
+            // from the keyboard's own notifications, the bar rides on the keyboard (EditorContainer). SwiftUI's keyboard
+            // avoidance resized the host in an animation of its own that did not follow the keyboard (the text bobbed).
+            .ignoresSafeArea(.all, edges: [.top, .bottom])
             .navigationTitle(Binding(get: { _ = model.titleVersion; return model.keyboardUp ? "" : model.current?.title ?? "" },
                                      set: { model.rename(to: $0) }))
             .navigationBarTitleDisplayMode(.inline)
@@ -288,34 +296,7 @@ struct EditorScreen: View {
                     }
                 }
             }
-            // Keyboard down: the counter and New Note in the same fixed bar as over the keyboard (Editors.bottomBar), over
-            // the text with a fade behind it as a toolbar's edge. Keyboard up: the keyboard's own bar. An overlay leaves
-            // the safe areas as they are; the text view keeps room under its last line (Editors.keyboard(up:)).
-            .overlay(alignment: .bottom) {
-                if !model.keyboardUp {
-                    BarHost(bar: model.editors.bottomBar)
-                        .frame(height: 56)
-                        .background {
-                            // A 24-point fade above the bar, solid behind it and down to the screen's edge, so no text
-                            // shows through the counter.
-                            VStack(spacing: 0) {
-                                LinearGradient(colors: [Color(uiColor: .systemBackground).opacity(0), Color(uiColor: .systemBackground)],
-                                               startPoint: .top, endPoint: .bottom)
-                                    .frame(height: 24)
-                                Color(uiColor: .systemBackground)
-                            }
-                            .padding(.top, -24)
-                            .ignoresSafeArea(edges: .bottom)
-                        }
-                }
-            }
     }
-}
-
-struct BarHost: UIViewRepresentable {
-    let bar: KeyboardBar
-    func makeUIView(context: Context) -> KeyboardBar { bar }
-    func updateUIView(_ v: KeyboardBar, context: Context) {}
 }
 
 /// Notes' dates in a row: the time today, «Yesterday», the weekday within a week, else the short date.
@@ -397,11 +378,17 @@ struct UndoResponder: UIViewRepresentable {
 }
 
 extension UIWindow {
-    /// Whether a text view or field is first responder (found by asking it to report itself).
+    /// Whether a text view or field, or the editor's dock, is first responder (found by asking it to report itself).
     var firstResponderIsText: Bool {
+        let found = firstResponder
+        return found is UITextInput || found is EditorDock
+    }
+    /// Whether anything in the window holds the input.
+    var firstResponderIsSomething: Bool { let f = firstResponder; return f is UIView || f is UIViewController }
+    var firstResponder: UIResponder? {
         var found: UIResponder?
         UIApplication.shared.sendAction(#selector(UIResponder.merumReport(_:)), to: nil, from: Box { found = $0 }, for: nil)
-        return found is UITextInput
+        return found
     }
 }
 

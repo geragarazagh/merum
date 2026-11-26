@@ -36,6 +36,7 @@ import UIKit
         _ = Merum.shared
         #if DEBUG && targetEnvironment(simulator)
         SimulatorModes.runIfAsked()
+        Probe.runIfAsked()
         #endif
         #if MERUM_ICLOUD
         application.registerForRemoteNotifications()
@@ -69,7 +70,6 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     }
 
     func sceneDidEnterBackground(_ scene: UIScene) {
-        Merum.shared.model.editors.saveCarets()
         Merum.shared.library.flush()
     }
 
