@@ -109,7 +109,9 @@ struct Row: Identifiable, Hashable {
         }
         observers.append(nc.addObserver(forName: NSTextStorage.didProcessEditingNotification, object: nil, queue: nil) { [weak self] n in
             let st = n.object as? NSTextStorage
-            MainActor.assumeIsolated { if let self, st != nil, st === self.current?.storage { self.count(after: 0.3) } }
+            MainActor.assumeIsolated {
+                if let self, st != nil, st === self.current?.storage { self.count(after: 0.3); self.freshenOpenRow() }
+            }
         })
         observers.append(nc.addObserver(forName: UIContentSizeCategory.didChangeNotification, object: nil, queue: nil) { [weak self] _ in
             MainActor.assumeIsolated { self?.editors.applyTextSize() }
@@ -308,7 +310,32 @@ struct Row: Identifiable, Hashable {
     }
 
     private func refreshRows() {
-        rows = library.notes.map { Row(id: $0.id, title: $0.title, pinned: $0.pinned, modified: $0.modified, preview: Model.preview($0)) }
+        rows = library.notes.map(Model.row)
+    }
+
+    private static func row(_ n: Note) -> Row {
+        Row(id: n.id, title: n.title, pinned: n.pinned, modified: n.modified, preview: preview(n))
+    }
+
+    /// The open note's row follows its text while it is typed in, so the list behind the editor is already right when
+    /// it comes back (a back swipe shows it from the gesture's first frame). Until 0.2 the row was read again only
+    /// once the list was back, and the list's animation crossfaded the old «No additional text» into the new text
+    /// for ~0.2 s. Once a turn of the run loop at most (a paste of a book is one change, typing one per key), and only
+    /// when what the row shows changes: the first 160 characters or the minute of its time.
+    @ObservationIgnored private var rowPending = false
+    private func freshenOpenRow() {
+        guard !rowPending else { return }
+        rowPending = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.rowPending = false
+            guard let n = self.open, let i = self.rows.firstIndex(where: { $0.id == n.id }) else { return }
+            let old = self.rows[i], new = Model.row(n)
+            guard new.preview != old.preview || NoteDate.text(new.modified) != NoteDate.text(old.modified) else { return }
+            var t = Transaction()
+            t.disablesAnimations = true
+            withTransaction(t) { self.rows[i] = new }
+        }
     }
 
     private func changed(_ change: Library.Change?) {
