@@ -321,6 +321,8 @@ extension NSPasteboard.PasteboardType {
         table.scrollRowToVisible(row)
         guard let f = (table.view(atColumn: 0, row: row, makeIfNecessary: true) as? NSTableCellView)?.textField else { return }
         renaming = (note, f)
+        // The row shows a long name cut (MainWindow.shown); the field edits all of it.
+        f.stringValue = note.title
         f.isEditable = true
         f.isSelectable = true
         view.window?.makeFirstResponder(f)
@@ -330,7 +332,7 @@ extension NSPasteboard.PasteboardType {
     func control(_ control: NSControl, textView: NSTextView, doCommandBy sel: Selector) -> Bool {
         guard let r = renaming, control === r.field else { return false }
         if sel == #selector(NSResponder.cancelOperation(_:)) {
-            r.field.stringValue = r.note.title
+            r.field.stringValue = MainWindow.shown(r.note.title)
             renaming = nil
             r.field.isEditable = false
             view.window?.makeFirstResponder(table)
@@ -344,7 +346,7 @@ extension NSPasteboard.PasteboardType {
         renaming = nil
         r.field.isEditable = false
         library.rename(r.note, to: r.field.stringValue)
-        r.field.stringValue = r.note.title
+        r.field.stringValue = MainWindow.shown(r.note.title)
         if view.window?.firstResponder == nil || view.window?.firstResponder === view.window { view.window?.makeFirstResponder(table) }
     }
 
@@ -545,7 +547,7 @@ final class NoteCell: NSTableCellView {
     required init?(coder: NSCoder) { fatalError() }
 
     func show(_ n: Note) {
-        textField?.stringValue = n.title
+        textField?.stringValue = MainWindow.shown(n.title)
         textField?.isEditable = false
         date.stringValue = Self.dateText(n.modified)
         preview.stringValue = Self.previewText(n)

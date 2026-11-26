@@ -183,7 +183,7 @@ import AppKit
         guard let lib = (NSApp.delegate as? App)?.library else { return }
         for (i, it) in noteItems.enumerated() {
             if i < lib.notes.count {
-                it.title = lib.notes[i].title
+                it.title = MainWindow.shown(lib.notes[i].title)
                 it.isHidden = false
             } else {
                 it.title = ""

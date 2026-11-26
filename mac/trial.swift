@@ -15,6 +15,8 @@
 //   set <defaults key> <value>                          writes a setting (folder paths, booleans)
 //   clipfiles a|b, clipdata <uti> <file>, clipload <file>  the private clipboard: file URLs, raw data, a file's text
 //   timedpaste, waitchange <s>, text, rects, syncwait <s>, deleteopen, refusal <code> [mods], search <q>, open <n>
+//   rename <file>, fieldpaste search|rename|find <file>, selectall [n], savename, jump start|middle|end   (timed)
+//   edits <n> <seed>, dirs <file>                       random typed edits; paragraph directions as JSON
 #if TRIALS
 import AppKit
 import Carbon.HIToolbox
@@ -42,6 +44,7 @@ import Carbon.HIToolbox
         let lines = (try? String(contentsOfFile: path, encoding: .utf8))?.components(separatedBy: "\n") ?? []
         Task { @MainActor in
             for line in lines where !line.isEmpty && !line.hasPrefix("#") {
+                Trace.log("step " + line.prefix(60))
                 await step(line, app)
                 // Until the keys posted by this step are handled.
                 for _ in 0..<100 where NSApp.nextEvent(matching: .any, until: nil, inMode: .default, dequeue: false) != nil {
@@ -310,6 +313,116 @@ import Carbon.HIToolbox
             side.minimumThickness = sMin; ed.minimumThickness = eMin; win.minSize = keepMin
             out["title"] = win.title; out["sidebarWidth"] = side.viewController.view.frame.width
             record(["toolbarfit": out])
+        case "rename":
+            // rename <file>: the open note gets the file's text as its name (a paste into the rename field), timed until
+            // the window is laid out and drawn again
+            guard let n = app.main.current else { return }
+            let name = (try? String(contentsOfFile: String(rest), encoding: .utf8)) ?? ""
+            let t0 = CACurrentMediaTime()
+            app.library.rename(n, to: name)
+            app.main.window?.layoutIfNeeded(); app.main.window?.displayIfNeeded(); CATransaction.flush()
+            record(["rename": (name as NSString).length, "ms": (CACurrentMediaTime() - t0) * 1000])
+        case "fieldpaste":
+            // fieldpaste search|rename|find <file>: the file's text pasted as ⌘V pastes into that field's editor,
+            // timed until the window is laid out and drawn again; then Esc
+            guard let win = app.main.window else { return }
+            switch w[1] {
+            case "search": app.main.searchNotes(nil)
+            case "rename": app.main.renameNote(nil)
+            default:
+                let it = NSMenuItem(); it.tag = NSTextFinder.Action.showFindInterface.rawValue
+                app.main.performFindPanelAction(it)
+            }
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            Clipboard.board.clearContents()
+            Clipboard.board.setString((try? String(contentsOfFile: String(rest.dropFirst(w[1].count + 1)), encoding: .utf8)) ?? "", forType: .string)
+            let fe = win.firstResponder as? NSTextView
+            record(["fieldeditor": w[1], "class": fe.map { String(describing: type(of: $0)) } ?? "none", "same": fe === win.fieldEditor(false, for: nil)])
+            let t0 = CACurrentMediaTime()
+            // ⌘V's own path (paste: reads the pasteboard with readSelection(from:type:)), on the private clipboard
+            _ = fe?.readSelection(from: Clipboard.board, type: .string)
+            win.layoutIfNeeded(); win.displayIfNeeded(); CATransaction.flush()
+            let ms = (CACurrentMediaTime() - t0) * 1000
+            record(["fieldpaste": w[1], "ms": ms, "fieldEditor": fe?.isFieldEditor ?? false, "length": (fe?.string as NSString?)?.length ?? -1,
+                    "tk2": fe?.textLayoutManager != nil])
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            let t1 = CACurrentMediaTime()
+            press("\u{1b}", kVK_Escape, [], app)
+            for _ in 0..<50 where NSApp.nextEvent(matching: .any, until: nil, inMode: .default, dequeue: false) != nil {
+                try? await Task.sleep(nanoseconds: 10_000_000)
+            }
+            win.layoutIfNeeded(); win.displayIfNeeded(); CATransaction.flush()
+            record(["fieldpasteEsc": w[1], "ms": (CACurrentMediaTime() - t1) * 1000, "title": String(win.title.prefix(40))])
+        case "selectall":
+            // selectall [n]: ⌘A's action in the note n times, each timed until drawn
+            guard let t = app.main.editor.textView, let win = app.main.window else { return }
+            var times: [Double] = []
+            for _ in 0..<(Int(w.count > 1 ? w[1] : "1") ?? 1) {
+                t.setSelectedRange(NSRange(location: 0, length: 0)); win.displayIfNeeded()
+                let t0 = CACurrentMediaTime()
+                t.selectAll(nil)
+                win.displayIfNeeded(); CATransaction.flush()
+                times.append((CACurrentMediaTime() - t0) * 1000)
+            }
+            record(["selectall": times.count, "ms": times, "length": app.main.current?.length ?? 0])
+        case "jump":
+            // jump start|middle|end: the caret put there, its line scrolled into view and drawn, each part timed
+            guard let t = app.main.editor.textView, let win = app.main.window else { return }
+            let len = (t.string as NSString).length
+            let loc = w[1] == "start" ? 0 : w[1] == "middle" ? len / 2 : len
+            var t0 = CACurrentMediaTime()
+            t.setSelectedRange(NSRange(location: loc, length: 0))
+            let a = CACurrentMediaTime() - t0; t0 = CACurrentMediaTime()
+            t.scrollRangeToVisible(t.selectedRange())
+            let b = CACurrentMediaTime() - t0; t0 = CACurrentMediaTime()
+            win.displayIfNeeded(); CATransaction.flush()
+            let c = CACurrentMediaTime() - t0
+            record(["jump": w[1], "selectMs": a * 1000, "scrollMs": b * 1000, "drawMs": c * 1000])
+        case "edits":
+            // edits <n> <seed>: n random edits of the open note as typed (insertions of letters of several scripts and line
+            // breaks, deletions, joins of paragraphs), at random places
+            guard let t = app.main.editor.textView else { return }
+            var rng = UInt64(w.count > 2 ? w[2] : "1") ?? 1
+            func next(_ m: Int) -> Int { rng = rng &* 6364136223846793005 &+ 1442695040888963407; return Int((rng >> 33) % UInt64(max(m, 1))) }
+            let bits = ["a", "ש", "م", "1", " ", "\n", "\u{2067}", "\u{2069}", "!", "Я", "😀"]
+            for _ in 0..<(Int(w[1]) ?? 100) {
+                let len = (t.string as NSString).length
+                let at = next(len + 1)
+                if next(3) == 0, len > 0 {
+                    let r = (t.string as NSString).rangeOfComposedCharacterSequence(at: max(0, min(at, len - 1)))
+                    t.setSelectedRange(r); t.deleteBackward(nil)
+                } else {
+                    t.setSelectedRange(NSRange(location: at, length: 0))
+                    t.insertText((0..<(1 + next(4))).map { _ in bits[next(bits.count)] }.joined(), replacementRange: t.selectedRange())
+                }
+            }
+            record(["edits": w[1], "length": (t.string as NSString).length])
+        case "dirs":
+            // dirs <file>: the open note's text and each paragraph's direction as set (0 left to right, 1 right to left, -1
+            // none), as JSON, for a check from outside
+            guard let n = app.main.current else { return }
+            let st = n.storage, str = st.mutableString
+            var paras: [[Int]] = []
+            var loc = 0
+            while loc < str.length {
+                let r = str.paragraphRange(for: NSRange(location: loc, length: 0))
+                let ps = st.attribute(.paragraphStyle, at: r.location, effectiveRange: nil) as? NSParagraphStyle
+                let d = ps.map { $0.baseWritingDirection == .rightToLeft ? 1 : $0.baseWritingDirection == .leftToRight ? 0 : -1 } ?? -1
+                var uniform = true
+                st.enumerateAttribute(.paragraphStyle, in: r) { v, _, stop in
+                    if (v as? NSParagraphStyle)?.baseWritingDirection != ps?.baseWritingDirection { uniform = false; stop.pointee = true } }
+                paras.append([r.location, r.length, d, uniform ? 1 : 0])
+                loc = NSMaxRange(r)
+            }
+            let o: [String: Any] = ["text": st.string, "paras": paras]
+            if let d = try? JSONSerialization.data(withJSONObject: o) { try? d.write(to: URL(fileURLWithPath: String(rest))) }
+            record(["dirs": paras.count])
+        case "savename":
+            // savename: the file name ⌘S would give the open note, timed
+            guard let n = app.main.current else { return }
+            let t0 = CACurrentMediaTime()
+            let f = Saver.fileName(n.title)
+            record(["savename": f.utf8.count, "ms": (CACurrentMediaTime() - t0) * 1000])
         case "clickempty":
             app.main.list.clickedEmpty()
         case "open":
