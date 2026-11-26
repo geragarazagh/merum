@@ -14,7 +14,7 @@ import AppKit
 @MainActor final class NoteView {
     let scroll = NSScrollView()
     let text: NoteTextView
-    let layout = NSLayoutManager()
+    let layout = NoteLayout()
     /// nil only for the empty editor shown when there are no notes.
     var note: Note?
     /// The text size (percent) the storage's attributes were last set for.
@@ -60,7 +60,12 @@ import AppKit
 
         scroll.hasVerticalScroller = true
         scroll.hasHorizontalScroller = false
-        scroll.autohidesScrollers = true
+        // The scroll bar stays when the text fits, as TextEdit's does (measured: autohidesScrollers is off there). Why:
+        // with scroll bars that take room (a mouse, or «Always» in System Settings) a hiding bar changes the text's width
+        // with its height, and TextKit 1's height of a text not yet laid out whole is not monotonic in the width (in a
+        // test machine: 307 pt at 834 wide, 205 pt at 817), so the bar came and went forever inside one layout pass:
+        // the main thread pinned for minutes, the same in 0.2. Overlay scroll bars (a trackpad) look the same either way.
+        scroll.autohidesScrollers = false
         scroll.borderType = .noBorder
         scroll.drawsBackground = true
         scroll.backgroundColor = .textBackgroundColor
@@ -73,6 +78,31 @@ import AppKit
     func detach() {
         layout.textStorage?.removeLayoutManager(layout)
         scroll.removeFromSuperview()
+    }
+}
+
+/// The layout manager of every note view: TextKit 1's, with glyph ranges that run past the last glyph cut back to it.
+///
+/// Why: laying out some scripts (Arabic among them: «مرحبا بالعالم» is 13 glyphs generated, 15 laid out) makes the
+/// typesetter insert glyphs, and when the container's width changes the paragraph is generated again with the
+/// inserted ones gone. NSTextView, resized without live resize (a window manager's Fill or tiling, Zoom), takes the
+/// glyph range of the selection, lets the new width lay the text out again, and then asks for that range's bounding
+/// rectangle: one glyph past the end when the selection reaches the end of the text (logged in a test machine on macOS
+/// 26: {0, 897} asked of 896 glyphs), and TextKit did not return from it (the main thread pinned until the app was
+/// killed, 108 s). Cut to the glyphs that exist, the rectangle is the selection's, less a glyph that is not there.
+final class NoteLayout: NSLayoutManager {
+    override func boundingRect(forGlyphRange range: NSRange, in container: NSTextContainer) -> NSRect {
+        super.boundingRect(forGlyphRange: existing(range), in: container)
+    }
+
+    /// The range as asked when its last glyph exists (the usual case; asking generates no glyph the call would not
+    /// make anyway), else cut to the glyphs there are.
+    private func existing(_ r: NSRange) -> NSRange {
+        let end = NSMaxRange(r)
+        guard end > 0, !isValidGlyphIndex(end - 1) else { return r }
+        let n = numberOfGlyphs
+        let loc = min(r.location, n)
+        return NSRange(location: loc, length: min(end, n) - loc)
     }
 }
 
