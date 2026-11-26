@@ -23,6 +23,7 @@ targets:
     platform: iOS
     sources:
       - app
+      - intents   # also in MerumControls: a control's intent must belong to the app and the extension
       - path: ../shared
       - gen/AppIcon.icon
     info:
@@ -45,6 +46,8 @@ targets:
             UIWindowSceneSessionRoleApplication:
               - UISceneConfigurationName: Default
                 UISceneDelegateClassName: $(PRODUCT_MODULE_NAME).SceneDelegate
+    dependencies:
+      - target: MerumControls   # embedded in PlugIns
     # iCloud as the Mac's (AGENTS.md, «iCloud: signing and set-up»): the one container, CloudKit, its Production
     # environment (where the schema is deployed), the key-value store, push (aps-environment from the configuration:
     # development in Debug, production in Release, the App Store build).
@@ -71,6 +74,32 @@ targets:
           MERUM_APS_ENVIRONMENT: development
         Release:
           MERUM_APS_ENVIRONMENT: production
+  # The controls (Action button → Controls, Control Center, the Lock Screen): a widget extension with no widgets, only
+  # two ControlWidget buttons. No entitlements and no App Group: the intents they run open the app and do their work
+  # there, so the extension shares no data.
+  MerumControls:
+    type: app-extension
+    platform: iOS
+    sources:
+      - controls
+      - intents
+    info:
+      path: gen/Controls-Info.plist
+      properties:
+        CFBundleDisplayName: Merum
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        CFBundleDevelopmentRegion: en
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.geragaraza.merum.controls
+        PRODUCT_NAME: MerumControls
+        TARGETED_DEVICE_FAMILY: "1"
+        # The shared intents compile here without the app's model; their work runs in the app (intents/Actions.swift).
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: $(inherited) MERUM_CONTROLS
+        APPLICATION_EXTENSION_API_ONLY: YES
   MerumTests:
     type: bundle.unit-test
     platform: iOS

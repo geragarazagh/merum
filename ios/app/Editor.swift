@@ -131,6 +131,8 @@ final class EditorDock: UIView {
     /// The next note shown takes the keyboard: a note always opens ready to type, at launch and from the list alike
     /// (his decision 2026-11-25: «просто всегда открывать клавиатуру»); a swipe down on the text puts it away.
     var focusNext = false
+    /// With focusNext: the caret goes to the end of the note first (the App Shortcuts and the control, Launch.swift).
+    var caretToEnd = false
 
     /// Views of the notes opened most recently, the newest last. Each keeps its layout, caret and scroll; a big note's
     /// layout costs memory (10 M characters scrolled through: ~240 MB), so only a few stay.
@@ -295,6 +297,11 @@ final class EditorDock: UIView {
         // the keyboard up); taken during the push it slid in sideways after it. At once when nothing is moving.
         if focusNext, tv.window != nil {
             focusNext = false
+            if caretToEnd {
+                caretToEnd = false
+                tv.selectedRange = NSRange(location: tv.textStorage.length, length: 0)
+                tv.scrollRangeToVisible(tv.selectedRange)
+            }
             let vc = sequence(first: tv as UIResponder, next: \.next).compactMap { $0 as? UIViewController }.first
             if let tc = vc?.transitionCoordinator {
                 // Not earlier: during the transition UIKit carries the keyboard in sideways with the view (tried at
