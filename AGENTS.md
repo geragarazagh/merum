@@ -68,8 +68,8 @@ One `Library` object per process owns everything; the UI only reads it and calls
   forward. A change from another device is applied to the note's `storage` as the smallest replacement (common
   prefix and suffix kept), so the caret and scroll of an open note stay where they were. Conflicts never lose
   text: a three-way merge against the last synced text; overlapping changes keep both versions. No iCloud account,
-  no network: everything works locally and catches up later. Sort settings and text size sync through the
-  key-value store.
+  no network: everything works locally and catches up later. Sort settings sync through the key-value store;
+  text size is each device's own (notes.json), by the owner's word 2026-11-25.
 - `Paste`: everything put into a note becomes text. Files (copied, dragged) become their full paths, one per line.
   A picture with no file behind it (a screenshot straight to the clipboard) becomes its text, recognised by Apple's
   Vision on the device in every language Vision offers, detected automatically. Rich text becomes its plain string.
@@ -112,7 +112,14 @@ Keep both objects alive (the library holds them weakly).
   what ⌘Z will do: a note's own steps (created, renamed) leave the stack when the note goes without an undo step
   (`leave`, deleted on another device), and a group holding a whole-note step is named after it (a new note and its
   first key in one event: «Undo New Note», still true once another device's change drops the typing). As a last
-  guard a group that finds nothing to do is passed over. Undoing a text step of a note `leave` dropped brings the
+  guard a group that finds nothing to do is passed over; each ⌘Z pops at least one group, so it ends within the stack's
+  depth. The history keeps its own stack (an array of groups, one per run-loop pass, as NSUndoManager groups by event);
+  `undoManager` is an UndoManager subclass that shows it to AppKit and UIKit (canUndo, names, undo, redo, the undo
+  notifications). Why: NSUndoManager's `removeAllActions(withTarget:)` could leave a group undo() never pops while
+  canUndo stays true, and the pass-over loop then spun forever (a burst of ⌘Z after another device's change: hang in
+  Mac 0.1 and the iPhone build of 2026-11-25). Something else registering on it with `registerUndo(withTarget:selector:
+  object:)` joins the same history; `prepare(withInvocationTarget:)` registrations do not (a field editor's own typing
+  undo in a rename field, if any, should use its own undo manager). Undoing a text step of a note `leave` dropped brings the
   note back.
 - `Store(dir:)`: `Store.defaultDirectory` = Application Support/Merum. Files: `notes.json`, `Notes/<id>.txt`,
   `sync.json`, and `Base/<id>.txt` (deviation: the text as last synced, only for notes whose edits have not reached
@@ -144,7 +151,8 @@ Keep both objects alive (the library holds them weakly).
   year from now, else the local value stays (a new note goes last, dated now); notes.json is repaired the same way on
   load and never gets a non-finite number. A record whose text did not come down keeps the note's old version: no
   upload or delete of that note goes until the text has come and been merged.
-- `SettingsSync`: key-value store key `settings` = {t, sort, ascending, textSize}; the later edit wins.
+- `SettingsSync`: key-value store key `settings` = {t, sort, ascending}; the later edit wins. Text size is per device
+  (in notes.json, never synced; a `textSize` an older build left in the record is ignored).
 - `Paste`: `Paste.content(of: NSPasteboard / UIPasteboard) -> Paste.Content?` (`.text(String)` at once, or
   `.image(CGImage)` to read), `Paste.recognize(CGImage) async -> String` ("" when the picture has no text: beep),
   `Paste.text(from:) async -> String?` (both in one; nil: nothing that reads as text). Recognition is the OCR app's

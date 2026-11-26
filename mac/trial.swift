@@ -272,11 +272,13 @@ import Carbon.HIToolbox
             let t0 = CACurrentMediaTime()
             switch w[1] {
             case "deleteall": app.main.list.table.selectAll(nil); app.main.list.deleteSelected()
+            case "cutall": app.main.editor.textView?.selectAll(nil); app.main.editor.textView?.cut(nil)
+            case "paste": app.main.editor.textView?.paste(nil)
             case "undo": app.library.history.undoManager.undo()
             default: app.library.history.undoManager.redo()
             }
             app.main.window?.layoutIfNeeded(); app.main.window?.displayIfNeeded(); CATransaction.flush()
-            record(["timeit": w[1], "ms": (CACurrentMediaTime() - t0) * 1000, "notes": app.library.notes.count])
+            record(["timeit": w[1], "ms": (CACurrentMediaTime() - t0) * 1000, "notes": app.library.notes.count, "length": app.main.current?.length ?? 0])
         case "toolbarfit":
             // toolbarfit: the narrowest window (sidebar shown, then hidden) at which every toolbar item is in the bar, not in
             // its » overflow; the split view's own minimums switched off meanwhile

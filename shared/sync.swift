@@ -818,8 +818,9 @@ final class CloudKitDatabase: CloudDatabase, @unchecked Sendable {
 
 // MARK: settings
 
-/// Sort, direction and text size, the same on every device of one iCloud account through the key-value store: one key
-/// holding all three and the time of the edit; the later edit wins. Without the entitlement nothing is sent.
+/// Sort and direction, the same on every device of one iCloud account through the key-value store: one key holding
+/// both and the time of the edit; the later edit wins. Without the entitlement nothing is sent. Text size is not here:
+/// it is each device's own (Library.textSize); a «textSize» an older build wrote into the record is ignored.
 @MainActor final class SettingsSync {
     let library: Library
     private var store: NSUbiquitousKeyValueStore?
@@ -846,23 +847,31 @@ final class CloudKitDatabase: CloudDatabase, @unchecked Sendable {
 
     private func send() {
         guard let store else { return }
-        store.set(["t": library.settingsModified, "sort": library.sort.rawValue, "ascending": library.ascending,
-                   "textSize": library.textSize], forKey: SettingsSync.key)
+        store.set(record(), forKey: SettingsSync.key)
         store.synchronize()
+    }
+
+    /// What goes into the key-value store.
+    func record() -> [String: Any] {
+        ["t": library.settingsModified, "sort": library.sort.rawValue, "ascending": library.ascending]
     }
 
     private func take() {
         guard let store else { return }
-        guard let d = store.dictionary(forKey: SettingsSync.key), let t = d["t"] as? Double, t.isFinite,
-              t < Date().timeIntervalSince1970 + 86400 else {
-            if library.settingsModified > 0 { send() }   // the first device to have them
-            return
+        if apply(store.dictionary(forKey: SettingsSync.key)) { send() }
+    }
+
+    /// Takes a record from the store if it is newer than this device's settings; true when this device's are newer
+    /// (or the store has none) and should be sent.
+    func apply(_ d: [String: Any]?) -> Bool {
+        guard let d, let t = d["t"] as? Double, t.isFinite, t < Date().timeIntervalSince1970 + 86400 else {
+            return library.settingsModified > 0   // the first device to have them
         }
-        if library.settingsModified > t { send(); return }
-        if library.settingsModified == t { return }
-        library.updateSettingsRemote(sort: (d["sort"] as? String).flatMap(Library.Sort.init(rawValue:)),
-                                     ascending: d["ascending"] as? Bool, textSize: d["textSize"] as? Int)
+        if library.settingsModified > t { return true }
+        if library.settingsModified == t { return false }
+        library.updateSettingsRemote(sort: (d["sort"] as? String).flatMap(Library.Sort.init(rawValue:)), ascending: d["ascending"] as? Bool)
         library.settingsModified = t
+        return false
     }
 
     static var available: Bool {

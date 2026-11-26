@@ -17,7 +17,7 @@ import UIKit
         /// One note's text changed from outside the text view (another device): `range` is the new text's range in
         /// the note, `delta` the change in length. Undo and redo do not post this; they call `History.reveal`.
         case text(Note, range: NSRange, delta: Int)
-        /// sort, ascending or textSize (here or from another device).
+        /// sort or ascending (here or from another device), or textSize (this device's own).
         case settings
     }
     nonisolated static let didChange = Notification.Name("MerumLibraryDidChange")
@@ -32,14 +32,16 @@ import UIKit
     var sort: Sort = .manual { didSet { if sort != oldValue { settingsChanged() } } }
     /// Oldest (or A to Z) first. The manual order has no direction: it is the person's own.
     var ascending = true { didSet { if ascending != oldValue { settingsChanged() } } }
-    /// Percent, one of `textSizes`.
+    /// Percent, one of `textSizes`. Per device, never synced (the owner's word 2026-11-25: «на макбуке отдельный
+    /// размер, на телефоне отдельный»); kept in this device's notes.json. Until then it went through the key-value
+    /// store; the value each device had then stays its own.
     var textSize = 100 {
         didSet {
             if !Library.textSizes.contains(textSize) { textSize = Library.closestTextSize(textSize); return }
-            if textSize != oldValue { settingsChanged() }
+            if textSize != oldValue { store?.metaChanged(); post(.settings) }
         }
     }
-    /// When sort, ascending or textSize were last changed here (seconds since 1970; 0 never), for SettingsSync.
+    /// When sort or ascending were last changed here (seconds since 1970; 0 never), for SettingsSync.
     var settingsModified: Double = 0 { didSet { store?.metaChanged() } }
     /// The note shown; per device, not synced. The UI sets it whenever it shows a note.
     var lastOpen: UUID? { didSet { if lastOpen != oldValue { store?.metaChanged() } } }
@@ -299,11 +301,10 @@ import UIKit
     }
 
     /// Sort settings and text size from another device.
-    func updateSettingsRemote(sort: Sort?, ascending: Bool?, textSize: Int?) {
+    func updateSettingsRemote(sort: Sort?, ascending: Bool?) {
         fromCloud = true
         if let sort { self.sort = sort }
         if let ascending { self.ascending = ascending }
-        if let textSize { self.textSize = textSize }
         fromCloud = false
     }
     private var fromCloud = false

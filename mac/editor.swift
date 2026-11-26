@@ -332,7 +332,9 @@ private struct Parked {
     func select(_ range: NSRange) {
         guard let t = current?.text, NSMaxRange(range) <= (t.textStorage?.length ?? 0) else { return }
         t.setSelectedRange(range)
-        t.scrollRangeToVisible(range)
+        // Its beginning into view, not the whole range: making a ten-million-character range visible lays all of it
+        // out (7.8 s on a ⌘Z of a big paste in a test machine), and the beginning is where the change is read from.
+        t.scrollRangeToVisible(NSRange(location: range.location, length: 0))
     }
 
     // MARK: edits, reported to the History

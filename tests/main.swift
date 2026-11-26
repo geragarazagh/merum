@@ -235,6 +235,30 @@ func testOrdinal() {
     }
 }
 
+@MainActor func testSettings() {
+    group("Settings: sort syncs, text size is each device's own") {
+        let mac = Library(), phone = Library()
+        let ms = SettingsSync(library: mac), ps = SettingsSync(library: phone)
+        mac.settingsSync = ms; phone.settingsSync = ps
+        mac.textSize = 200
+        eq(mac.settingsModified, 0, "a text size change is not a synced setting")
+        check(ms.record()["textSize"] == nil, "not in the record")
+        mac.sort = .edited; mac.ascending = false
+        check(mac.settingsModified > 0)
+        phone.textSize = 75
+        _ = ps.apply(ms.record())
+        eq(phone.sort, .edited); eq(phone.ascending, false); eq(phone.textSize, 75, "the phone keeps its own size")
+        // A record an older build wrote, text size included: the size is ignored.
+        var old = ms.record(); old["textSize"] = 300; old["t"] = Date().timeIntervalSince1970 + 1
+        _ = ps.apply(old)
+        eq(phone.textSize, 75)
+        // Per device on disk.
+        let dir = tempDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        do { let l = Library(store: Store(dir: dir)); l.textSize = 150; l.flush() }
+        eq(Library(store: Store(dir: dir)).textSize, 150)
+    }
+}
+
 // MARK: History
 
 @MainActor func testHistory() {
@@ -423,6 +447,120 @@ func testOrdinal() {
         l2.removeRemote(q)
         eq(u2.undoActionName, "Typing", "Q's New Note and Rename Note left with it")
         u2.undo(); eq(p.text, "")
+    }
+}
+
+// MARK: History under a storm of undo and redo
+
+/// A small seeded generator, so a failing run can be named by its seed and run again.
+struct SeededRandom: RandomNumberGenerator {
+    var s: UInt64
+    init(_ seed: UInt64) { s = seed &+ 0x9E3779B97F4A7C15 }
+    mutating func next() -> UInt64 {
+        s &+= 0x9E3779B97F4A7C15
+        var z = s
+        z = (z ^ (z >> 30)) &* 0xBF58476D1CE4E5B9; z = (z ^ (z >> 27)) &* 0x94D049BB133111EB
+        return z ^ (z >> 31)
+    }
+}
+
+/// A call that does not come back within the bound stops the run with the seed and the operation: a hung ⌘Z must fail
+/// the tests, never hang them.
+final class Watchdog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var since: Date?
+    private var what = ""
+    init(bound: TimeInterval) {
+        Thread.detachNewThread { [self] in
+            while true {
+                Thread.sleep(forTimeInterval: 0.25)
+                lock.lock(); let s = since, w = what; lock.unlock()
+                if let s, Date().timeIntervalSince(s) > bound {
+                    print("  FAIL: \(w) did not return within \(bound) s"); fflush(stdout); exit(1)
+                }
+            }
+        }
+    }
+    func run<T>(_ w: String, _ f: () -> T) -> T {
+        lock.lock(); since = Date(); what = w; lock.unlock()
+        defer { lock.lock(); since = nil; lock.unlock() }
+        return f()
+    }
+}
+
+/// Random sequences of every operation the core has (new, typing, cut, delete one or many, leave, rename, move, pin,
+/// another device's text change, deletion and new note, ensureNote, caret moves), interleaved with bursts of ⌘Z and
+/// ⇧⌘Z. Every call must return within the bound; then everything is undone and redone to the end, which must finish
+/// within the stack's depth; without changes from other devices, undoing everything and redoing it must give back
+/// exactly the same notes and texts.
+@MainActor func testUndoStorm(seeds: Range<UInt64>, steps: Int) {
+    let dog = Watchdog(bound: 2)
+    group("History: \(seeds.count) random storms of \(steps) steps with undo and redo bursts, a 2 s watchdog on every call") {
+        for seed in seeds {
+            var g = SeededRandom(seed)
+            // One run in four without the silent changes (another device's, an empty note dropped when left), for the
+            // round trip check: those are not undo steps, so undoing everything cannot give back the state before them.
+            let remote = seed % 4 != 0
+            let lib = Library(); let um = lib.history.undoManager
+            var calls = 0
+            for step in 0..<steps {
+                let notes = lib.notes
+                let pick = notes.isEmpty ? nil : notes[Int.random(in: 0..<notes.count, using: &g)]
+                let r = Int.random(in: 0..<100, using: &g)
+                dog.run("seed \(seed) step \(step) op \(r)") {
+                    switch r {
+                    case 0..<10: _ = lib.newNote()
+                    case 10..<25:
+                        if let n = pick {
+                            var at = Int.random(in: 0...n.length, using: &g)
+                            // A text view never puts the caret inside a surrogate pair.
+                            if at > 0 && at < n.length && Diff.isLow((n.text as NSString).character(at: at)) { at -= 1 }
+                            edit(lib, n, NSRange(location: at, length: 0), ["a", "bc", "é", "😀", "\n"].randomElement(using: &g)!)
+                        }
+                    case 25..<28:
+                        if let n = pick, n.length > 0 {
+                            let a = Int.random(in: 0..<n.length, using: &g)
+                            let range = (n.text as NSString).rangeOfComposedCharacterSequences(for: NSRange(location: a, length: min(3, n.length - a)))
+                            edit(lib, n, range, "", .cut)
+                        }
+                    case 28..<31: if let n = pick, n.length > 0 { edit(lib, n, NSRange(location: 0, length: n.length), "", .cut) }
+                    case 31..<36: lib.delete(Array(notes.shuffled(using: &g).prefix(Int.random(in: 1...3, using: &g))))
+                    case 36..<40: if remote, let n = pick { lib.leave(n) }
+                    case 40..<44: if let n = pick { lib.rename(n, to: Bool.random(using: &g) ? "" : "R\(step)") }
+                    case 44..<47: if let n = pick { lib.move([n], toIndex: Int.random(in: 0...notes.count, using: &g)) }
+                    case 47..<50: if let n = pick { lib.pin([n], Bool.random(using: &g)) }
+                    case 50..<53: if remote, let n = pick { lib.applyRemote(n, text: "remote \(step)" as NSString, modified: nil) }
+                    case 53..<55: if remote, let n = pick { lib.removeRemote(n) }
+                    case 55..<57: if remote { lib.insertRemote(Note(title: "In \(step)", position: Double(step), storage: NSTextStorage(string: Bool.random(using: &g) ? "" : "x"))) }
+                    case 57..<60: let n = lib.ensureNote(); edit(lib, n, NSRange(location: 0, length: 0), "e")
+                    case 60..<64: lib.history.breakTyping()
+                    case 64..<84: for _ in 0..<Int.random(in: 1...20, using: &g) { um.undo(); calls += 1 }
+                    default: for _ in 0..<Int.random(in: 1...20, using: &g) { um.redo(); calls += 1 }
+                    }
+                }
+                if ProcessInfo.processInfo.environment["STORM_TRACE"] != nil && step > steps - 12 {
+                    print("   step \(step) op \(r): notes \(lib.notes.map { $0.title + "=" + $0.text.debugDescription }) undo «\(um.undoActionName)» canUndo \(um.canUndo) redo «\(um.redoActionName)» canRedo \(um.canRedo)")
+                }
+                for n in lib.notes { check(n.length == (n.storage.string as NSString).length) }
+                if Int.random(in: 0..<3, using: &g) == 0 { endEvent() }
+            }
+            endEvent()
+            // To the top first (the run may end with steps undone), then to the bottom and back: each ⌘Z pops at least
+            // one group, so the counts are bounded by what was registered.
+            var top = 0
+            dog.run("seed \(seed): redo to the top") { while um.canRedo && top < steps * 4 { um.redo(); top += 1 } }
+            let before = lib.notes.map { "\($0.id)|\($0.title)|\($0.pinned)|\($0.text)" }.sorted()
+            var n = 0
+            dog.run("seed \(seed): undo all") { while um.canUndo && n < steps * 4 { um.undo(); n += 1 } }
+            check(!um.canUndo, "seed \(seed): undo reaches the bottom")
+            var m = 0
+            dog.run("seed \(seed): redo all") { while um.canRedo && m < steps * 4 { um.redo(); m += 1 } }
+            check(!um.canRedo, "seed \(seed): redo reaches the top")
+            if !remote {
+                eq(lib.notes.map { "\($0.id)|\($0.title)|\($0.pinned)|\($0.text)" }.sorted(), before, "seed \(seed): undo all + redo all gives back the same notes")
+            }
+            check(calls > 0)
+        }
     }
 }
 
@@ -1487,12 +1625,19 @@ func oldFacts(_ s: String) -> (Int, Int, Int) {
 @MainActor func main() async {
     if CommandLine.arguments.dropFirst().first == "bench" {
         bench()
+    } else if CommandLine.arguments.dropFirst().first == "stormone" {
+        let a = CommandLine.arguments
+        testUndoStorm(seeds: UInt64(a[2])!..<(UInt64(a[2])! + 1), steps: Int(a[3])!)
+    } else if CommandLine.arguments.dropFirst().first == "storm" {
+        testUndoStorm(seeds: 0..<400, steps: 4000)
     } else {
         testOrdinal()
         testMerge()
         testLibrary()
         testPinned()
+        testSettings()
         testHistory()
+        testUndoStorm(seeds: 0..<24, steps: 2500)
         testStore()
         await testSync()
         await testPaste()

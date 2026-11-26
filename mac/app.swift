@@ -80,6 +80,20 @@ import AppKit
         if background { NSApp.setActivationPolicy(.accessory) } else { show() }
         EditorController.warmLanguages()
         #if TRIALS
+        // With --trace: a heartbeat from the main thread every 50 ms; a gap over 150 ms is written down as a stall, and a
+        // line a second says the app is alive (a watchdog outside reads it to catch a hang).
+        if Trace.handle != nil {
+            var last = CACurrentMediaTime(), lastBeat = last
+            let beat = Timer(timeInterval: 0.05, repeats: true) { _ in
+                MainActor.assumeIsolated {
+                    let now = CACurrentMediaTime()
+                    if now - last > 0.15 { Trace.log(String(format: "stall %.0f ms", (now - last - 0.05) * 1000)) }
+                    if now - lastBeat > 1 { Trace.log("beat"); lastBeat = now }
+                    last = now
+                }
+            }
+            RunLoop.main.add(beat, forMode: .common)   // also while a menu is open or a window is resized
+        }
         if let i = CommandLine.arguments.firstIndex(of: "--trial"), i + 1 < CommandLine.arguments.count {
             Trial.run(CommandLine.arguments[i + 1], app: self)
         }

@@ -2,9 +2,9 @@
 
 # Merum
 
-Plain-text notes for Mac. A hot key shows them over any app; anything pasted becomes text, and a long note is as quick as a short one.
+Plain-text notes for Mac and iPhone. On the Mac a hot key shows them over any app; anything pasted becomes text, and a long note is as quick as a short one.
 
-Apple silicon, macOS 13 or later.
+Apple silicon, macOS 13 or later; iPhone, iOS 26 or later.
 
 ## Install
 
@@ -13,3 +13,5 @@ brew install geragarazagh/tap/merum
 ```
 
 Or download [`Merum.dmg`](https://github.com/geragarazagh/merum/releases/latest/download/Merum.dmg).
+
+iPhone: [App Store](https://apps.apple.com/app/id6839201907).
