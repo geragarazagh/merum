@@ -163,8 +163,16 @@ extension NSToolbarItem.Identifier {
     }
 
     func updateTitle() {
-        let t = current?.title ?? "Merum"
+        let t = current.map { Self.shown($0.title) } ?? "Merum"
         if window?.title != t { window?.title = t }
+    }
+
+    /// A name as the window's title, a list row and the Window menu show it: whole up to 300 characters, else its
+    /// first 300 and «…». A name is whatever was pasted into the rename field, and the title bar (SwiftUI on macOS 26)
+    /// and the rows measure the whole string at every layout pass: an 85,000-character name held the main thread
+    /// 0.5-5 s on each one (the monkey test, 2026-11-26). No row or title bar is wide enough for more than about 300.
+    static func shown(_ name: String) -> String {
+        name.utf8.count <= 1200 || name.count <= 300 ? name : String(name.prefix(300)) + "…"
     }
 
     // MARK: opening notes
@@ -336,6 +344,10 @@ extension NSToolbarItem.Identifier {
         w.setFrame(f, display: true)
     }
 
+    /// The rename field, the search field and the find bar's field all edit in this one (FieldEditor: why).
+    private let fieldEditor: FieldEditor = { FieldEditor.guardAppKitFields(); return FieldEditor.make() }()
+    func windowWillReturnFieldEditor(_ sender: NSWindow, to client: Any?) -> Any? { fieldEditor }
+
     func windowWillReturnUndoManager(_ window: NSWindow) -> UndoManager? {
         if let t = window.firstResponder as? NSTextView, t.isFieldEditor { return fieldUndo }
         return library.history.undoManager
@@ -460,5 +472,68 @@ extension NSToolbarItem.Identifier {
     @objc func searchNotes(_ sender: Any?) {
         if sidebar.isCollapsed { sidebar.animator().isCollapsed = false }
         searchItem?.beginSearchInteraction()
+    }
+}
+
+/// The window's field editor (rename, search, the find bar): AppKit's own, except that a paste or a drop puts in the
+/// pasteboard's plain string as typed text. AppKit's paste turns the bidi embedding and override characters of a plain
+/// string (U+202A-U+202E) into nested NSWritingDirection attributes; on macOS 26, a run nested 12 deep right after a
+/// shallower one makes CoreFoundation's bidi pass trap («Size of noLongerSeeControlChars has exceeded allowed control
+/// character limit») and the app dies, in TextKit 1 and 2 alike, TextEdit too. Fourteen characters are enough:
+/// U+202E, nine U+202D, U+20DD, two U+202D, «;» (found by the monkey test on 26.6.2, 2026-11-26; measured in a test
+/// machine: the same text typed or inserted as a string lays out fine). Inserted as a string, every character stays as
+/// it was pasted, the controls included; only the attributes AppKit would have made are not made.
+final class FieldEditor: NSTextView {
+    static func make() -> FieldEditor {
+        // TextKit 1, as the notes' views are (editor.swift).
+        let f = FieldEditor(usingTextLayoutManager: false)
+        f.isFieldEditor = true
+        return f
+    }
+
+    override func paste(_ sender: Any?) { _ = insertPlain(from: Clipboard.board) }
+    override func pasteAsPlainText(_ sender: Any?) { paste(sender) }
+    override func pasteAsRichText(_ sender: Any?) { paste(sender) }
+
+    /// Drops and Services land here too, with the selection already where the text goes.
+    override func readSelection(from pboard: NSPasteboard, type: NSPasteboard.PasteboardType) -> Bool {
+        insertPlain(from: pboard) || super.readSelection(from: pboard, type: type)
+    }
+
+    /// The one text view of the window that is AppKit's own, the find bar's field (NSFindPatternFieldEditor, which the
+    /// window's delegate is not asked for), keeps AppKit's paste; the attributes that paste makes are taken off again
+    /// before anything lays them out. There the bidi controls of a pasted query are lost (AppKit took them out of the
+    /// string); the app lives. Notes never carry those attributes (their paste is the core's).
+    static func guardAppKitFields() {
+        NotificationCenter.default.addObserver(forName: NSTextStorage.willProcessEditingNotification, object: nil, queue: nil) { n in
+            guard let s = n.object as? NSTextStorage, s.editedMask.contains(.editedAttributes) || s.editedMask.contains(.editedCharacters),
+                  s.editedRange.length > 0, NSMaxRange(s.editedRange) <= s.length else { return }
+            MainActor.assumeIsolated {
+                guard !s.layoutManagers.contains(where: { $0.firstTextView is NoteTextView }) else { return }
+                s.removeAttribute(.writingDirection, range: s.editedRange)
+                // Typed text, and the find bar's own paste, get the same limit, right after the edit (characters cannot
+                // change here).
+                guard s.length > pasteLimit else { return }
+                DispatchQueue.main.async {
+                    guard let t = NSApp.keyWindow?.firstResponder as? NSTextView, t.isFieldEditor,
+                          t.textStorage === s, s.length > pasteLimit else { return }
+                    let keep = (capped(s.string) as NSString).length
+                    let cut = NSRange(location: keep, length: s.length - keep)
+                    if t.shouldChangeText(in: cut, replacementString: "") { s.replaceCharacters(in: cut, with: ""); t.didChangeText() }
+                }
+            }
+        }
+    }
+
+    /// A field holds at most this many characters (a name, a query): the rest of a long paste is left out, typing past it
+    /// is cut back. On macOS 26 the toolbar and the find bar measure a field's whole string on every layout pass (SwiftUI): 85,000
+    /// pasted characters held the main thread 1-3 s again and again in the monkey test.
+    static let pasteLimit = 1_000
+    static func capped(_ s: String) -> String { s.utf16.count <= pasteLimit ? s : String(s.prefix(pasteLimit)) }
+
+    private func insertPlain(from pboard: NSPasteboard) -> Bool {
+        guard isEditable, let s = pboard.string(forType: .string) else { return false }
+        insertText(Self.capped(s), replacementRange: selectedRange())
+        return true
     }
 }

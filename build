@@ -54,7 +54,7 @@ sources=(shared/*.swift mac/*.swift)
 sources=(${sources:#mac/icon.swift})
 # An explicit minimum: by default swiftc targets this Mac's macOS and every older system refuses the result.
 swiftc -O -wmo -target arm64-apple-macos$min -module-name $name $trials -F vendor -framework Sparkle \
-  -Xlinker -rpath -Xlinker @executable_path/../Frameworks -o "$app/Contents/MacOS/$name" $sources
+  -licucore -Xlinker -rpath -Xlinker @executable_path/../Frameworks -o "$app/Contents/MacOS/$name" $sources
 
 # App icon, Apple's way (dev/apps.md, «Icons, light and dark»): mac/icon.swift writes the whole Icon Composer document
 # (the picture, the system's own fill as the plate, glass, shadow and translucency off, and the tinted entry without

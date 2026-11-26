@@ -170,12 +170,39 @@ private struct Parked {
         for n in library.notes where storageObservers[n.id] == nil {
             storageObservers[n.id] = NotificationCenter.default.addObserver(
                 forName: NSTextStorage.willProcessEditingNotification, object: n.storage, queue: nil) { [weak self] note in
-                guard let s = note.object as? NSTextStorage, s.editedMask.contains(.editedCharacters), s.editedRange.length > 0 else { return }
+                guard let s = note.object as? NSTextStorage, s.editedMask.contains(.editedCharacters) else { return }
                 MainActor.assumeIsolated {
                     guard let self else { return }
-                    s.setAttributes(self.attributes, range: s.editedRange)
+                    // A deletion has nothing to dress, but can change its paragraph's direction (its first letter gone,
+                    // two paragraphs joined).
+                    if s.editedRange.length > 0 { s.setAttributes(self.attributes, range: s.editedRange) }
+                    if s.editedRange.length > Self.fixAheadFrom { self.fixAhead(s, from: s.editedRange.location) }
+                    Direction.fix(s, around: s.editedRange)
                 }
             }
+        }
+    }
+
+    /// After a big change, the fonts for the characters the system font lacks are looked up ahead, a piece per pass of
+    /// the run loop, from the change's start on. Why: AppKit looks them up lazily but always from the first place not yet
+    /// done, so after a paste of 3.9 M characters of mixed scripts, the caret put in the middle looked up the whole first
+    /// half before it moved: 1.1-1.4 s on the main thread in a test machine. Done ahead, in pieces of 8,192 characters, the
+    /// person's own steps find it done or nearly; typing and scrolling go on between the pieces.
+    static let fixAheadFrom = 100_000
+    private var fixers: [ObjectIdentifier: Task<Void, Never>] = [:]
+    private func fixAhead(_ s: NSTextStorage, from start: Int) {
+        let id = ObjectIdentifier(s)
+        fixers[id]?.cancel()
+        fixers[id] = Task { @MainActor [weak self, weak s] in
+            var loc = start
+            while let s, loc < s.length, !Task.isCancelled {
+                let r = NSRange(location: loc, length: min(8_192, s.length - loc))
+                s.ensureAttributesAreFixed(in: r)
+                loc = NSMaxRange(r)
+                // A timer's wait, not a yield: the run loop takes events between the pieces.
+                try? await Task.sleep(nanoseconds: 1_000_000)
+            }
+            self?.fixers[id] = nil
         }
     }
 
@@ -189,6 +216,7 @@ private struct Parked {
         if s.length > 0 {
             s.beginEditing()
             s.setAttributes(a, range: NSRange(location: 0, length: s.length))
+            Direction.fix(s, around: NSRange(location: 0, length: s.length))
             s.endEditing()
         }
         v.text.typingAttributes = a
@@ -500,6 +528,21 @@ final class NoteTextView: NSTextView {
     static let readable: [NSPasteboard.PasteboardType] = [.fileURL, .URL, .string, .rtfd, .rtf, .html, .pdf, .png, .tiff,
         .init("public.jpeg"), .init("public.heic"), .init("com.apple.webarchive"), .color, .init("public.utf8-plain-text")]
 
+    /// Writing Tools place their button by the selection's rectangle, measured on every change of the selection: ⌘A in a
+    /// big note had the layout manager make every glyph of the text first (2-3 s for 3.9 M characters of mixed scripts in
+    /// a test machine, every font fallback looked up, then 0.2 s on each ⌘A). With more than 100,000 characters selected
+    /// (about forty pages, more than Writing Tools rewrite well; Apple publishes no limit) they stay out of it; a smaller
+    /// selection has them back.
+    static let writingToolsLimit = 100_000
+    override func setSelectedRanges(_ ranges: [NSValue], affinity: NSSelectionAffinity, stillSelecting: Bool) {
+        if #available(macOS 15.0, *) {
+            let selected = ranges.reduce(0) { $0 + $1.rangeValue.length }
+            let behavior: NSWritingToolsBehavior = selected > Self.writingToolsLimit ? .none : .default
+            if writingToolsBehavior != behavior { writingToolsBehavior = behavior }
+        }
+        super.setSelectedRanges(ranges, affinity: affinity, stillSelecting: stillSelecting)
+    }
+
     override func validateMenuItem(_ item: NSMenuItem) -> Bool {
         if item.action == #selector(paste(_:)) || item.action == #selector(pasteAsPlainText(_:)) || item.action == #selector(pasteAsRichText(_:)) {
             // Paste turns almost anything into text; reading it here would decode a picture at every menu check.
@@ -529,3 +572,116 @@ final class NoteTextView: NSTextView {
         editor?.spellingChanged(self)
     }
 }
+
+/// Each paragraph's base writing direction, set explicitly as its own paragraph style instead of being left «natural».
+///
+/// Why: TextKit 1 resolves a natural direction anew for every line it lays out, and on macOS 26 that pass
+/// (CFAttributedStringGetStatisticalWritingDirections) walks the storage's attribute runs well beyond the paragraph: in a
+/// text that changes script often (every font fallback is a run) it cost 40 ms a keystroke at 1 M characters and 115-455
+/// ms at 3.9 M in a test machine, and 4 s to show a pasted 3.9 M-character text; a paragraph with an explicit direction
+/// skips it (6-10 ms a keystroke, 0.3 s for the paste). macOS 27 does not pay it, 26 does.
+/// The direction is the one Unicode's bidi algorithm gives a paragraph (UBA rules P2 and P3: its first strong letter,
+/// isolates skipped; none: left to right). A paragraph that begins in Hebrew or Arabic now reads right to left from the
+/// right edge, as TextKit 2 (TextEdit, Notes) lays it out; TextKit 1's natural direction left it at the left edge
+/// (measured on 26 and 27).
+/// Kept per paragraph as the text changes: the edit's paragraphs are looked at again (willProcessEditing); AppKit makes
+/// every paragraph's style that of its first character.
+@MainActor enum Direction {
+    static let ltr = style(.leftToRight)
+    static let rtl = style(.rightToLeft)
+    private static func style(_ d: NSWritingDirection) -> NSParagraphStyle {
+        let p = NSMutableParagraphStyle()
+        p.baseWritingDirection = d
+        return p.copy() as! NSParagraphStyle
+    }
+
+    /// Every paragraph `range` touches gets its direction; inside one paragraph whose direction stays, only the
+    /// edited characters are written, so typing in a huge paragraph costs what it does in a short one.
+    static func fix(_ s: NSTextStorage, around range: NSRange) {
+        let str = s.mutableString
+        guard str.length > 0 else { return }
+        // One character past the edit too: text that ends in a line break leaves the rest of its paragraph as a new
+        // paragraph after it, whose direction is its own now.
+        let at = min(range.location, str.length)
+        let whole = str.paragraphRange(for: NSRange(location: at, length: min(range.length + 1, str.length - at)))
+        var pending: (style: NSParagraphStyle, range: NSRange)?
+        func flush() { if let p = pending { s.addAttribute(.paragraphStyle, value: p.style, range: p.range) }; pending = nil }
+        paragraphs(str, whole) { para, rtl in
+            let want = rtl ? Self.rtl : Self.ltr
+            let have = s.attribute(.paragraphStyle, at: para.location, effectiveRange: nil) as? NSParagraphStyle
+            let target: NSRange
+            if have?.baseWritingDirection == want.baseWritingDirection {
+                // The paragraph keeps its direction: only what the edit brought in needs the style.
+                target = NSIntersectionRange(para, range)
+                guard target.length > 0 else { return }
+            } else {
+                target = para
+            }
+            if let p = pending, p.style === want, NSMaxRange(p.range) == target.location {
+                pending = (want, NSRange(location: p.range.location, length: p.range.length + target.length))
+            } else {
+                flush()
+                pending = (want, target)
+            }
+        }
+        flush()
+    }
+
+    /// Calls `body` for each paragraph of `range` (which starts at a paragraph start) with whether UBA P2/P3 make it
+    /// right to left. Paragraphs end after LF, CR, CR LF or U+2029, as NSString's paragraphRange(for:) has them.
+    static func paragraphs(_ str: NSString, _ range: NSRange, _ body: (NSRange, Bool) -> Void) {
+        let chunk = 16_384
+        var buf = [unichar](repeating: 0, count: chunk + 1)
+        var start = range.location, i = range.location
+        let end = NSMaxRange(range)
+        var decided: Bool?   // nil: no strong letter yet
+        var isolates = 0
+        while i < end {
+            let n = min(chunk, end - i)
+            // One more unit, so a surrogate pair or CR LF split by the chunk's end is read whole.
+            let extra = i + n < str.length ? 1 : 0
+            buf.withUnsafeMutableBufferPointer { str.getCharacters($0.baseAddress!, range: NSRange(location: i, length: n + extra)) }
+            var k = 0
+            while k < n {
+                let c = buf[k]
+                if c == 0x0A || c == 0x0D || c == 0x2029 {
+                    var len = k + 1
+                    if c == 0x0D, k + 1 < n + extra, buf[k + 1] == 0x0A { len += 1 }
+                    let paraEnd = i + len
+                    body(NSRange(location: start, length: paraEnd - start), decided ?? false)
+                    start = paraEnd; decided = nil; isolates = 0
+                    k = len
+                    continue
+                }
+                var step = 1
+                if decided == nil {
+                    var scalar = UInt32(c)
+                    if UTF16.isLeadSurrogate(c), k + 1 < n + extra, UTF16.isTrailSurrogate(buf[k + 1]) {
+                        scalar = 0x10000 + ((UInt32(c) - 0xD800) << 10) + (UInt32(buf[k + 1]) - 0xDC00)
+                        step = 2
+                    }
+                    if scalar < 0x80 {
+                        // ASCII: letters are strong left to right, the rest neutral.
+                        if isolates == 0, (scalar | 0x20) >= 0x61, (scalar | 0x20) <= 0x7A { decided = false }
+                    } else {
+                        switch u_charDirection(Int32(bitPattern: scalar)) {
+                        case 19, 20, 21: isolates += 1                    // FSI, LRI, RLI
+                        case 22: if isolates > 0 { isolates -= 1 }        // PDI
+                        case 0: if isolates == 0 { decided = false }      // L
+                        case 1, 13: if isolates == 0 { decided = true }   // R, AL
+                        default: break
+                        }
+                    }
+                }
+                k += step
+            }
+            // Past the chunk when its last unit began a CR LF or a surrogate pair.
+            i += k
+        }
+        if start < end { body(NSRange(location: start, length: end - start), decided ?? false) }
+    }
+}
+
+/// ICU's bidi class of a code point (UCharDirection: 0 L, 1 R, 13 AL, 19 FSI, 20 LRI, 21 RLI, 22 PDI, …), from the
+/// system's libicucore, on every macOS this app runs on.
+@_silgen_name("u_charDirection") private func u_charDirection(_ c: Int32) -> Int32
