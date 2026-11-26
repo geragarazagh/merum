@@ -16,7 +16,10 @@ struct RootView: View {
             if new.isEmpty { model.listBarShown = true }
             if new.isEmpty, !old.isEmpty { model.leftEditor() }
         }
-        .background { UndoResponder(trigger: "\(model.path.count) \(model.keyboardUp) \(model.editingEnded)", active: !model.keyboardUp) }
+        .background {
+            UndoResponder(trigger: "\(model.path.count) \(model.keyboardUp) \(model.editingEnded)", active: !model.keyboardUp,
+                          onList: { [model] in model.path.isEmpty })
+        }
     }
 }
 
@@ -354,6 +357,9 @@ struct EditorHost: UIViewRepresentable {
 struct UndoResponder: UIViewRepresentable {
     let trigger: String
     let active: Bool
+    /// Read when the delay is over: only the list needs this responder (the editor has its dock). Taken on the editor,
+    /// it raced the keyboard of a note opened within the delay of Back.
+    let onList: () -> Bool
 
     final class View: UIView {
         override var canBecomeFirstResponder: Bool { true }
@@ -371,7 +377,7 @@ struct UndoResponder: UIViewRepresentable {
         guard active else { return }
         // After the push or pop has settled, and only if nothing else (a text field, the search) holds the keyboard.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            guard v.window != nil, !(v.window?.firstResponderIsText ?? false) else { return }
+            guard v.window != nil, onList(), !(v.window?.firstResponderIsText ?? false) else { return }
             v.becomeFirstResponder()
         }
     }

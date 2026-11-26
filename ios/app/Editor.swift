@@ -291,22 +291,11 @@ final class EditorDock: UIView {
         otherInput = true
         let old = container.show(tv)
         container.dock.enabled = true
-        // Taken the moment a push ends, so the keyboard rises from the bottom as in Notes (his recording: push, then
-        // the keyboard up); taken during the push it slid in sideways after it. At once when nothing is moving.
-        if focusNext, tv.window != nil {
+        if focusNext {
             focusNext = false
-            let vc = sequence(first: tv as UIResponder, next: \.next).compactMap { $0 as? UIViewController }.first
-            if let tc = vc?.transitionCoordinator {
-                // Not earlier: during the transition UIKit carries the keyboard in sideways with the view (tried at
-                // the push's start and at its 0.35 s duration). Its completion (~0.53 s, the spring settled) gives
-                // Notes' order: the push, then the keyboard rising, ~0.2 s after the push looks done (Notes: ~0.3 s).
-                tc.animate(alongsideTransition: nil) { [weak tv] ctx in
-                    if !ctx.isCancelled, tv?.window != nil { tv?.becomeFirstResponder() }
-                }
-            } else {
-                // The new note takes the input before the old view goes: the keyboard stays up between them.
-                tv.becomeFirstResponder()
-            }
+            focusTarget = tv
+            focusTries = 0
+            tryFocus()
         }
         if let old {
             if old.isFirstResponder { _ = old.resignFirstResponder() }
@@ -314,6 +303,39 @@ final class EditorDock: UIView {
         }
         otherInput = false
         dockIfIdle()
+    }
+
+    /// The view that takes the keyboard once its screen has settled, and how many frames it has waited for that.
+    private weak var focusTarget: NoteTextView?
+    private var focusTries = 0
+
+    /// The keyboard for a note just shown, the moment its screen is in its final place: at the end of a push, so it
+    /// rises from the bottom as in Notes (his recording: push, then the keyboard up; taken during the push UIKit carried
+    /// it in sideways with the view), at once when nothing moves (launch, an arrival, a switch with the keyboard up: the
+    /// new note takes the input before the old view goes, so the keyboard stays up between them).
+    ///
+    /// Asked again each frame until it holds (at most ~2 s), not once: a row tapped within ~0.5 s of Back met SwiftUI
+    /// putting the new screen's view in the window before its controller joined the navigation stack, then moving it
+    /// there; the input taken in that first place was lost with the move and the note opened with no keyboard (his
+    /// recording, «Third Note», ~4 s with no caret; OpenTests: every open within ~0.5 s of Back, and a transition's
+    /// completion arriving with the view out of the window).
+    private func tryFocus(afterTransition: Bool = false) {
+        guard let tv = focusTarget else { return }
+        guard tv === container.shown, model?.path.isEmpty == false, !tv.isFirstResponder else { focusTarget = nil; return }
+        let vc = sequence(first: tv as UIResponder, next: \.next).compactMap { $0 as? UIViewController }.first
+        if tv.window != nil, vc?.isSettled ?? true {
+            if !afterTransition, let tc = vc?.transitionCoordinator {
+                tc.animate(alongsideTransition: nil) { [weak self] _ in self?.tryFocus(afterTransition: true) }
+                return
+            }
+            if tv.becomeFirstResponder() {
+                focusTarget = nil
+                return
+            }
+        }
+        focusTries += 1
+        guard focusTries < 120 else { focusTarget = nil; return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0 / 60) { [weak self] in self?.tryFocus() }
     }
 
     /// The editor left the screen: the bar goes with it.
@@ -909,5 +931,19 @@ final class Fade: UIView {
         let c = UIColor.systemBackground.resolvedColor(with: traitCollection)
         let colors = [c.withAlphaComponent(0).cgColor, c.cgColor]
         (layer as! CAGradientLayer).colors = reversed ? colors.reversed() : colors
+    }
+}
+
+private extension UIViewController {
+    /// In its final place: reached from the window's root (or a presented controller) through its parents, and, inside
+    /// a navigation stack, the top screen or part of it.
+    var isSettled: Bool {
+        var c: UIViewController = self
+        while let p = c.parent { c = p }
+        guard c === viewIfLoaded?.window?.rootViewController || c.presentingViewController != nil else { return false }
+        guard let nav = navigationController, let top = nav.topViewController else { return true }
+        var v: UIViewController? = self
+        while let x = v { if x === top { return true }; v = x.parent }
+        return false
     }
 }
