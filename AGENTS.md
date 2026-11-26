@@ -13,6 +13,8 @@ select, paste, undo and switch to. Every choice below that looks unusual is ther
 shared/   the core, compiled into both apps (no AppKit-only or UIKit-only code except behind #if os(macOS) / os(iOS))
 mac/      the Mac app (AppKit), built by ./build with plain swiftc
 ios/      the iPhone app (XcodeGen project.yml, `ios/make` generates Merum.xcodeproj; the project file is not in git)
+          ios/intents: Open Merum and New Note (App Intents), compiled into the app and ios/controls (the MerumControls
+          widget extension: two ControlWidget buttons for the Action button, Control Center, the Lock Screen)
 tests/    core tests runnable on the Mac without Xcode UI (`./test`)
 skills/merum/SKILL.md   copied by ./build into Merum.app/Contents/Resources/SKILL.md
 ```
