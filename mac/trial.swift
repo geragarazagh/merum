@@ -17,6 +17,7 @@
 //   timedpaste, waitchange <s>, text, rects, syncwait <s>, deleteopen, refusal <code> [mods], search <q>, open <n>
 //   rename <file>, fieldpaste search|rename|find <file>, selectall [n], savename, jump start|middle|end   (timed)
 //   edits <n> <seed>, dirs <file>                       random typed edits; paragraph directions as JSON
+//   select <location> <length|end>                      a selection in the open note
 #if TRIALS
 import AppKit
 import Carbon.HIToolbox
@@ -353,6 +354,12 @@ import Carbon.HIToolbox
             }
             win.layoutIfNeeded(); win.displayIfNeeded(); CATransaction.flush()
             record(["fieldpasteEsc": w[1], "ms": (CACurrentMediaTime() - t1) * 1000, "title": String(win.title.prefix(40))])
+        case "select":
+            // select <location> <length|end>: a selection put in the open note, as a drag or ⇧ keys leave it
+            guard let t = app.main.editor.textView else { return }
+            let len = (t.string as NSString).length, loc = min(Int(w[1]) ?? 0, len)
+            t.setSelectedRange(NSRange(location: loc, length: w.count > 2 && w[2] != "end" ? min(Int(w[2]) ?? 0, len - loc) : len - loc))
+            record(["select": NSStringFromRange(t.selectedRange()), "length": len])
         case "selectall":
             // selectall [n]: ⌘A's action in the note n times, each timed until drawn
             guard let t = app.main.editor.textView, let win = app.main.window else { return }
