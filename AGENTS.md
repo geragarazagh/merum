@@ -242,9 +242,12 @@ Keep both objects alive (the library holds them weakly).
   state; nothing of ours sets the frame while they run. Toolbar: sidebar, New Note, Share, «…», Search. Its start is
   fixed: the sidebar button and the sidebar's tracking separator can't be moved or taken out and nothing goes before
   the separator (`toolbarImmovableItemIdentifiers`, `toolbar(_:itemIdentifier:canBeInsertedAt:)`, macOS 13+); a stored
-  bar unlike that is repaired at launch and after any change, a turn later, never inside AppKit's own change. Any item
-  before the separator made macOS 27's bar lay itself out on every display cycle (50-80 % CPU idle, wiggling, no
-  right-click menu, 2026-11-27). `trial monkey` (mac/monkey.swift) is the check: random sheet, ⌘-drag, resize and
+  bar unlike that is repaired at launch and after any change, a turn later, never inside AppKit's own change, and never
+  left with nothing after the separator (a flexible space goes there). On macOS 27 any item before the separator made
+  the bar lay itself out on every display cycle (50-90 % CPU idle, wiggling), and a bar with nothing over the note made
+  Customize Toolbar… throw as it opened (no sheet, ever again for that bar): his two bars of 2026-11-27 did both. After
+  every change of the bar its title bar views are laid out again (AppKit decides » and Search's fold only when the width
+  changes). `trial monkey` (mac/monkey.swift) is the check: random sheet, ⌘-drag, resize and
   sidebar actions, at rest no layout of the bar, CPU ~0, the right-click menu, nothing in » at the minimum.
   `sidebar.swift` the list (two-line rows as Apple Notes, «Pinned» and «Notes» groups that scroll with the rows,
   selection, rename, drag inside a group, delete, copy, search, animated rows; while a row is dragged the rows stay as
