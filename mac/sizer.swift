@@ -21,7 +21,7 @@ import AppKit
     /// its text size) and measured again only when one of them changes.
     func measure() -> Need {
         guard let main, let bar = main.window?.toolbar else { return Need(editor: 360, height: 332) }
-        let key = "windowMinimum"
+        let key = "windowMinimum"   // nosemgrep (the name of a settings key, not a secret)
         let os = ProcessInfo.processInfo.operatingSystemVersion
         let signature = bar.items.map(\.itemIdentifier.rawValue).joined(separator: ",")
             + " | \(os.majorVersion).\(os.minorVersion).\(os.patchVersion) | \(NSFont.systemFontSize) \(NSFont.smallSystemFontSize)"
@@ -30,7 +30,7 @@ import AppKit
             return Need(editor: e, height: h)
         }
         let need = measured(bar)
-        UserDefaults.standard.set(["signature": signature, "editor": Double(need.editor), "height": Double(need.height)], forKey: key)
+        UserDefaults.standard.set(["signature": signature, "editor": Double(need.editor), "height": Double(need.height)], forKey: key)   // nosemgrep (a measured window size, not a secret)
         return need
     }
 
