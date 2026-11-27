@@ -573,6 +573,28 @@ final class NoteTextView: NSTextView {
         super.setSelectedRanges(ranges, affinity: affinity, stillSelecting: stillSelecting)
     }
 
+    /// The range an edit of the person's replaces: the selection. NSTextView's own asks the storage for one attribute over
+    /// the whole selection (longestEffectiveRange) to widen it, and that makes the storage fix the fonts of every
+    /// character selected first: ⌘A then ⌫ or a key in a note of 1.9 M characters of mixed scripts waited 0.8 s in a test
+    /// machine, up to 2.5 s in the monkey test, before anything was deleted. Every character of a note carries only the
+    /// font, colour and paragraph style the editor gives it (EditorController.observeStorages), so that widening never
+    /// happens here; a big selection is answered without the walk, a small one by AppKit as always.
+    override var rangeForUserTextChange: NSRange {
+        guard let r = bigSelection else { return super.rangeForUserTextChange }
+        return isEditable ? r : NSRange(location: NSNotFound, length: 0)
+    }
+
+    /// The same for Delete, typing and paste, which ask for the ranges (one per caret).
+    override var rangesForUserTextChange: [NSValue]? {
+        guard let r = bigSelection else { return super.rangesForUserTextChange }
+        return isEditable ? [NSValue(range: r)] : nil
+    }
+
+    private var bigSelection: NSRange? {
+        let r = selectedRange()
+        return r.length > 10_000 && selectedRanges.count == 1 && !hasMarkedText() ? r : nil
+    }
+
     override func validateMenuItem(_ item: NSMenuItem) -> Bool {
         if item.action == #selector(paste(_:)) || item.action == #selector(pasteAsPlainText(_:)) || item.action == #selector(pasteAsRichText(_:)) {
             // Paste turns almost anything into text; reading it here would decode a picture at every menu check.

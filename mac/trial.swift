@@ -18,6 +18,7 @@
 //   rename <file>, fieldpaste search|rename|find <file>, selectall [n], savename, jump start|middle|end   (timed)
 //   edits <n> <seed>, dirs <file>                       random typed edits; paragraph directions as JSON
 //   select <location> <length|end>                      a selection in the open note
+//   customize                                           Customize Toolbar… opened and closed; is the search still the bar's
 #if TRIALS
 import AppKit
 import Carbon.HIToolbox
@@ -268,17 +269,31 @@ import Carbon.HIToolbox
             win.setFrame(start, display: true)
             let s = times.sorted()
             record(["resizebench": n, "medianMs": s[s.count / 2], "maxMs": s.last!, "open": app.main.current?.title ?? "-", "length": app.main.current?.length ?? 0])
+        case "customize":
+            // customize: View > Customize Toolbar… opened and closed with Done; records whether the search ⌥⌘F uses is
+            // still the bar's (the palette's copies once took its place)
+            guard let win = app.main.window else { return }
+            record(["searchInBarBefore": app.main.searchIsInBar])
+            win.runToolbarCustomizationPalette(nil)
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            if let sheet = win.attachedSheet { win.endSheet(sheet) }
+            try? await Task.sleep(nanoseconds: 800_000_000)
+            record(["searchInBarAfter": app.main.searchIsInBar, "sheetGone": win.attachedSheet == nil])
         case "manynotes":
             // manynotes <n>: n short notes made at once
             for i in 0..<(Int(w[1]) ?? 10) { _ = Commands.new(app.library, text: "Note text number \(i)", name: nil) }
         case "timeit":
-            // timeit deleteall|undo|redo: the list's ⌘A ⌘⌫, or ⌘Z / ⇧⌘Z, timed until the window is drawn again
+            // timeit deleteall|cutall|paste|undo|redo|selectall|delete (⌫)|type (one x)|end (caret to the end): the list's ⌘A ⌘⌫, or ⌘Z / ⇧⌘Z, timed until the window is drawn again
             let t0 = CACurrentMediaTime()
             switch w[1] {
             case "deleteall": app.main.list.table.selectAll(nil); app.main.list.deleteSelected()
             case "cutall": app.main.editor.textView?.selectAll(nil); app.main.editor.textView?.cut(nil)
             case "paste": app.main.editor.textView?.paste(nil)
             case "undo": app.library.history.undoManager.undo()
+            case "selectall": app.main.editor.textView?.selectAll(nil)
+            case "delete": app.main.editor.textView?.deleteBackward(nil)
+            case "type": app.main.editor.textView?.insertText("x", replacementRange: app.main.editor.textView?.selectedRange() ?? NSRange())
+            case "end": if let t = app.main.editor.textView { t.setSelectedRange(NSRange(location: t.string.utf16.count, length: 0)) }
             default: app.library.history.undoManager.redo()
             }
             app.main.window?.layoutIfNeeded(); app.main.window?.displayIfNeeded(); CATransaction.flush()

@@ -435,7 +435,9 @@ extension NSToolbarItem.Identifier {
             item.label = "More"; item.paletteLabel = "More"; item.toolTip = "More"
             item.image = NSImage(systemSymbolName: "ellipsis.circle", accessibilityDescription: "More")
             item.showsIndicator = false
-            item.menu = moreMenu()
+            // The palette of Customize Toolbar… asks for its own copy (flag false): it gets a menu of its own, as one
+            // menu cannot be two items' at once and the bar's «…» would lose its own.
+            item.menu = flag ? moreMenu() : NSMenu()
             return item
         case .search:
             let item = NSSearchToolbarItem(itemIdentifier: id)
@@ -445,7 +447,9 @@ extension NSToolbarItem.Identifier {
             item.searchField.target = self
             item.searchField.action = #selector(searchChanged(_:))
             item.searchField.delegate = self
-            searchItem = item
+            // Only the bar's own field is the search: the palette's copy (flag false) goes when the sheet closes, and
+            // kept here it left ⌥⌘F and the list's filter pointing at a field nobody sees.
+            if flag { searchItem = item }
             return item
         default:
             return nil
@@ -517,6 +521,11 @@ extension NSToolbarItem.Identifier {
     }
 
     @objc func searchChanged(_ field: NSSearchField) { list.search(field.stringValue) }
+
+    #if TRIALS
+    /// Whether the search ⌥⌘F begins is the one in the window's bar.
+    var searchIsInBar: Bool { searchItem.map { $0.searchField.window === window && window?.toolbar?.items.contains($0) == true } ?? false }
+    #endif
 
     /// Edit > Find > Note List Search… (⌥⌘F, as Apple Notes): the search field, the sidebar shown for its results.
     @objc func searchNotes(_ sender: Any?) {
