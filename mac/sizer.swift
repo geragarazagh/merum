@@ -6,12 +6,10 @@
 // plays no part.
 //
 // What counts as «the whole bar» is what the bar shows when the window is as wide as the search goes, not every item it
-// holds: items the person put before the sidebar's tracking separator sit over the sidebar, in a part of the bar as wide
-// as the sidebar, and no window width brings them back from the overflow when the sidebar is too narrow for them (on
-// macOS 27 the traffic lights, the sidebar button and New Note need ~190 pt there, the sidebar's narrowest is 182). Before
-// 2026-11-27 the search waited for every item to show, never saw it, and took its widest try as the answer: the bar
-// [sidebar button, New Note, tracking separator] made a minimum of 2400 pt on a 1728 pt screen, a window that could
-// not be made smaller and a Customize Toolbar… sheet out of sight.
+// holds. Before 2026-11-27 an item could be put before the sidebar's tracking separator, into the part of the bar as wide
+// as the sidebar, where no window width brought it back from the overflow (the bar [sidebar button, New Note, tracking
+// separator] made a minimum of 2400 pt on a 1728 pt screen); the bar's start is fixed now (window.swift, fixedItems),
+// and the rule stays for whatever a later system lays out differently.
 import AppKit
 
 @MainActor final class Sizer: NSObject, NSToolbarDelegate {
@@ -22,7 +20,12 @@ import AppKit
 
     init(main: MainWindow) { self.main = main }
 
-    struct Need { var editor: CGFloat; var height: CGFloat }
+    /// `editor` with the sidebar at its narrowest; `perSidebar` how much more the note's part of the bar needs for each
+    /// point the sidebar is wider. On macOS 27 the search folds to its magnifier sooner beside a wider sidebar: the
+    /// default bar's note part needs 462 pt beside a sidebar of 182 and 522 beside 360, a third of a point for every point
+    /// (measured to the point at 24 widths, the same from a narrower and a wider window, 2026-11-27); a sidebar dragged
+    /// wide in a window near its minimum put the search into its magnifier. Measured at both ends and taken as a line.
+    struct Need { var editor: CGFloat; var height: CGFloat; var perSidebar: CGFloat = 0 }
 
     /// The narrowest whole note beside the sidebar at its narrowest, and the lowest whole window. A measure takes 15-110 ms
     /// (test machines, macOS 13 and 27), so its result is kept with what it depends on (the bar's items, the system and
@@ -31,15 +34,17 @@ import AppKit
         guard let main, let bar = main.window?.toolbar else { return Need(editor: 360, height: 332) }
         let key = "windowMinimum"   // nosemgrep (the name of a settings key, not a secret)
         let os = ProcessInfo.processInfo.operatingSystemVersion
-        // «2»: measures kept by the search before 2026-11-27 are not trusted (see the head of this file).
-        let signature = "2 | " + bar.items.map(\.itemIdentifier.rawValue).joined(separator: ",")
+        // «3»: measures kept before the sidebar's own share was measured (2026-11-27) are taken again.
+        let signature = "3 | " + bar.items.map(\.itemIdentifier.rawValue).joined(separator: ",")
             + " | \(os.majorVersion).\(os.minorVersion).\(os.patchVersion) | \(NSFont.systemFontSize) \(NSFont.smallSystemFontSize)"
         if let kept = UserDefaults.standard.dictionary(forKey: key), kept["signature"] as? String == signature,
-           let e = kept["editor"] as? Double, let h = kept["height"] as? Double, Self.sane(e, h) {
-            return Need(editor: e, height: h)
+           let e = kept["editor"] as? Double, let h = kept["height"] as? Double, Self.sane(e, h),
+           let k = kept["perSidebar"] as? Double, k.isFinite, k >= 0, k < 2 {
+            return Need(editor: e, height: h, perSidebar: k)
         }
         let need = measured(bar)
-        UserDefaults.standard.set(["signature": signature, "editor": Double(need.editor), "height": Double(need.height)], forKey: key)   // nosemgrep (a measured window size, not a secret)
+        UserDefaults.standard.set(["signature": signature, "editor": Double(need.editor), "height": Double(need.height),
+                                   "perSidebar": Double(need.perSidebar)], forKey: key)   // nosemgrep (a measured window size, not a secret)
         return need
     }
 
@@ -62,14 +67,21 @@ import AppKit
         split.splitViewItems[0].isCollapsed = false
         let shown = narrowest(w) { w.layoutIfNeeded(); split.splitView.setPosition(side, ofDividerAt: 0) }
         let sideWidth = split.splitViewItems[0].viewController.view.frame.width
+        // The sidebar at its widest: the search starts where a window holds that sidebar and a sliver of note.
+        let most = MainWindow.sidebarMax
+        let shownWide = narrowest(w, from: most + 50) { w.layoutIfNeeded(); split.splitView.setPosition(most, ofDividerAt: 0) }
+        let wideWidth = split.splitViewItems[0].viewController.view.frame.width
         split.splitViewItems[0].isCollapsed = true
         let hidden = narrowest(w) {}
         split.splitViewItems[0].isCollapsed = false
-        let editor = max(shown - (sideWidth > 0 ? sideWidth : side), hidden - side, Self.countsWidth, 200).rounded(.up)
+        let note = shown - (sideWidth > 0 ? sideWidth : side)
+        let editor = max(note, hidden - side, Self.countsWidth, 200).rounded(.up)
+        let noteWide = shownWide - (wideWidth > side ? wideWidth : most)
+        let perSidebar = wideWidth > side + 1 ? max(0, (noteWide - note) / (wideWidth - (sideWidth > 0 ? sideWidth : side))) : 0
         // The bar's height (the frame less the content's layout rect) and five two-line rows of the list.
         let barHeight = w.frame.height - w.contentLayoutRect.height
         let height = (barHeight + 5 * NoteCell.height).rounded(.up)
-        return Need(editor: editor, height: height)
+        return Need(editor: editor, height: height, perSidebar: perSidebar)
     }
 
     /// The counts line whole for the largest note the app is made for (ten million characters, AGENTS.md) and a margin:
@@ -83,8 +95,8 @@ import AppKit
     /// The smallest window width (to the point) at which the bar shows all it shows at the widest: as many items out of
     /// the » overflow, and the search as a field if it is one there. An item that stays in the overflow at any width (one
     /// over a sidebar too narrow for it) is not waited for.
-    private func narrowest(_ w: NSWindow, _ settle: () -> Void) -> CGFloat {
-        var lo: CGFloat = 120, hi: CGFloat = Self.widest
+    private func narrowest(_ w: NSWindow, from start: CGFloat = 120, _ settle: () -> Void) -> CGFloat {
+        var lo: CGFloat = start, hi: CGFloat = Self.widest
         func look(_ width: CGFloat) -> Look {
             var f = w.frame; f.size.width = width
             w.setFrame(f, display: false)
@@ -155,7 +167,7 @@ import AppKit
         let b = NSViewController(); b.view = NSView()
         let side = NSSplitViewItem(sidebarWithViewController: a)
         side.minimumThickness = MainWindow.sidebarMin
-        side.maximumThickness = MainWindow.sidebarMin
+        side.maximumThickness = MainWindow.sidebarMax
         side.canCollapse = true
         let note = NSSplitViewItem(viewController: b)
         note.minimumThickness = 10

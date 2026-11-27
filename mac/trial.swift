@@ -23,6 +23,9 @@
 //   bar <id,id,…>, barsweep <random> <seed> [from] [n]   the toolbar's items set; every bar the sheet allows, its minimum checked
 //   custflow                                            Customize Toolbar… with items taken out and put back, the sheet's place
 //   sidebar <width>|hide|show                           the sidebar set; what of the bar shows
+//   monkey <n> <seed>, barcheck <label>, idle <s>       the toolbar's monkey test and its checks at rest (monkey.swift)
+//   sbsweep, sbneed                                     the bar at the minimum for every sidebar width; the note's need per width
+//   tbadd <id> <i>, sheet open|close, tomin, unfold, relayout view|nudge, itemframes   single bar steps and looks
 #if TRIALS
 import AppKit
 import Carbon.HIToolbox
@@ -357,6 +360,9 @@ import Carbon.HIToolbox
                 for i in b.indices.reversed() { b.swapAt(i, next(i + 1)) }
                 bars.append(b)
             }
+            // Only bars the delegate allows (the fixed start): every other one is repaired at launch and refused in the sheet.
+            var seen = Set<String>()
+            bars = bars.map(MainWindow.repaired).filter { seen.insert($0.map(\.rawValue).joined(separator: ",")).inserted }
             let v = screen.visibleFrame
             var fails: [[String: Any]] = [], slow = 0.0, widest = 0.0, tallest = 0.0, unlike = 0, slowBar = "", times: [Double] = []
             let t00 = CACurrentMediaTime()
@@ -499,6 +505,64 @@ import Carbon.HIToolbox
             if let sheet = win.attachedSheet { win.endSheet(sheet) }
             await wait(1.0)
             state("default set, done")
+        case "monkey":
+            await Monkey.run(Int(w[1]) ?? 100, seed: UInt64(w.count > 2 ? Int(w[2]) ?? 1 : 1), app)
+        case "itemframes":
+            // itemframes: each bar item's place on screen, top-left origin as posted mouse events take it
+            guard let win = app.main.window, let tb = win.toolbar, let h = (win.screen ?? NSScreen.main)?.frame.maxY else { return }
+            var r: [[String: Any]] = []
+            for item in tb.items {
+                guard let v = item.view, v.window === win else { r.append(["id": item.itemIdentifier.rawValue]); continue }
+                let f = win.convertToScreen(v.convert(v.bounds, to: nil))
+                r.append(["id": item.itemIdentifier.rawValue, "x": f.midX.rounded(), "y": (h - f.midY).rounded()])
+            }
+            record(["items": r, "window": NSStringFromRect(win.frame), "screen": NSStringFromRect((win.screen ?? NSScreen.main)?.frame ?? .zero)])
+        case "sbneed":
+            await Monkey.sidebarNeed(app)
+        case "sbsweep":
+            await Monkey.sidebarSweep(app)
+        case "barcheck":
+            await Monkey.barcheck(w.count > 1 ? String(rest) : "-", app)
+        case "tbadd":
+            // tbadd <id> <index>: an item put into the bar, as a drop from Customize Toolbar… puts it
+            app.main.window?.toolbar?.insertItem(withItemIdentifier: NSToolbarItem.Identifier(w[1]), at: Int(w[2]) ?? 2)
+        case "relayout":
+            // relayout view|nudge: the bar asked to lay itself out again, by its view or by a point of width and back
+            guard let win = app.main.window, let tb = win.toolbar else { return }
+            if w[1] == "view", let fv = win.contentView?.superview, let bar = Monkey.find(fv, "NSToolbarView") {
+                bar.needsLayout = true; bar.layoutSubtreeIfNeeded()
+            } else if w[1] == "nudge" {
+                let f = win.frame; var g = f; g.size.width += 1
+                win.setFrame(g, display: false); win.layoutIfNeeded(); win.setFrame(f, display: false); win.layoutIfNeeded()
+            }
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            let o = Monkey.overflow(tb)
+            record(["relayout": w[1], "shown": o.shown, "wanted": o.wanted, "folded": o.searchFolded, "width": win.frame.width])
+        case "unfold":
+            // unfold: from the window as it is, wider point by point until the bar shows everything; then back to where it was
+            guard let win = app.main.window, let tb = win.toolbar else { return }
+            let f0 = win.frame
+            var at: CGFloat = 0
+            for d in 0...80 {
+                var f = f0; f.size.width += CGFloat(d); win.setFrame(f, display: true); win.layoutIfNeeded()
+                try? await Task.sleep(nanoseconds: 50_000_000)
+                let o = Monkey.overflow(tb); if o.shown >= o.wanted && !o.searchFolded { at = f.width; break }
+            }
+            win.setFrame(f0, display: true); win.layoutIfNeeded()
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            let o = Monkey.overflow(tb)
+            record(["unfoldsAt": at, "from": f0.width, "backAtFromWidth": ["shown": o.shown, "wanted": o.wanted, "folded": o.searchFolded]])
+        case "tomin":
+            // tomin: the window set to its minimum
+            if let win = app.main.window { win.setFrame(NSRect(x: 30, y: 109, width: win.minSize.width, height: win.minSize.height), display: true) }
+        case "sheet":
+            // sheet open|close: Customize Toolbar… opened, or closed with Done
+            guard let win = app.main.window else { return }
+            if w[1] == "open" { win.runToolbarCustomizationPalette(nil) } else if let s = win.attachedSheet { win.endSheet(s) }
+        case "idle":
+            BarLayouts.window = app.main.window; BarLayouts.install()
+            let i = await Monkey.idle(settle: 0.5, look: Double(w[1]) ?? 3)
+            record(["idleLayoutsPerS": i.layouts, "idleCPU": i.cpu])
         case "sidebar":
             // sidebar <width>|hide|show: the real window's sidebar, then what of the bar is visible
             let item = app.main.split.splitViewItems[0]
