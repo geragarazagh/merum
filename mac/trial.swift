@@ -272,13 +272,17 @@ import Carbon.HIToolbox
             // manynotes <n>: n short notes made at once
             for i in 0..<(Int(w[1]) ?? 10) { _ = Commands.new(app.library, text: "Note text number \(i)", name: nil) }
         case "timeit":
-            // timeit deleteall|undo|redo: the list's ⌘A ⌘⌫, or ⌘Z / ⇧⌘Z, timed until the window is drawn again
+            // timeit deleteall|cutall|paste|undo|redo|selectall|delete (⌫)|type (one x)|end (caret to the end): the list's ⌘A ⌘⌫, or ⌘Z / ⇧⌘Z, timed until the window is drawn again
             let t0 = CACurrentMediaTime()
             switch w[1] {
             case "deleteall": app.main.list.table.selectAll(nil); app.main.list.deleteSelected()
             case "cutall": app.main.editor.textView?.selectAll(nil); app.main.editor.textView?.cut(nil)
             case "paste": app.main.editor.textView?.paste(nil)
             case "undo": app.library.history.undoManager.undo()
+            case "selectall": app.main.editor.textView?.selectAll(nil)
+            case "delete": app.main.editor.textView?.deleteBackward(nil)
+            case "type": app.main.editor.textView?.insertText("x", replacementRange: app.main.editor.textView?.selectedRange() ?? NSRange())
+            case "end": if let t = app.main.editor.textView { t.setSelectedRange(NSRange(location: t.string.utf16.count, length: 0)) }
             default: app.library.history.undoManager.redo()
             }
             app.main.window?.layoutIfNeeded(); app.main.window?.displayIfNeeded(); CATransaction.flush()
