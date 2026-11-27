@@ -207,6 +207,9 @@ final class EditorDock: UIView {
         guard inset != keyboardInset else { return }
         keyboardInset = inset
         for v in views.values { Editors.setInset(inset, of: v) }
+        // After a turn the keyboard's new frame comes last: the caret's line follows it inside the keyboard's own
+        // animation (this notification's), not a frame later in layout (a one-line jump in landscape).
+        if tv.caretPending { tv.scrollCaretIntoView(animated: false) }
     }
 
     /// A back swipe is under way (keyboard(frame:)).
@@ -242,6 +245,26 @@ final class EditorDock: UIView {
         // Builds up to 0.2 kept each note's caret here; a note now always opens at its end.
         UserDefaults.standard.removeObject(forKey: "caret")
         bar.compose = { [weak self] in self?.model?.compose() }
+        NotificationCenter.default.addObserver(forName: UIDevice.orientationDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.deviceTurned() }
+        }
+    }
+
+    /// The phone was turned: the screen will follow. Heard before the interface starts to turn (the root controller's
+    /// viewWillTransition was not called for this window), so the text view takes its picture of the page as it is.
+    private func deviceTurned() {
+        guard let tv = container.shown, let scene = container.window?.windowScene else { return }
+        let target: UIInterfaceOrientation
+        switch UIDevice.current.orientation {
+        case .portrait: target = .portrait
+        case .landscapeLeft: target = .landscapeRight   // the device's left is the interface's right
+        case .landscapeRight: target = .landscapeLeft
+        default: return
+        }
+        guard target != scene.effectiveGeometry.interfaceOrientation,
+              scene.windows.first?.rootViewController?.supportedInterfaceOrientations.contains(UIInterfaceOrientationMask(rawValue: 1 << UInt(target.rawValue))) ?? true
+        else { return }
+        tv.prepareForTurn()
     }
 
     // MARK: fonts
@@ -524,7 +547,10 @@ final class EditorDock: UIView {
         d.becomeFirstResponder()
     }
 
-    func scrollViewWillBeginDragging(_ sv: UIScrollView) { (sv as? NoteTextView)?.endPending = false }
+    func scrollViewWillBeginDragging(_ sv: UIScrollView) {
+        (sv as? NoteTextView)?.endPending = false
+        (sv as? NoteTextView)?.caretPending = false
+    }
 
     func textViewDidChangeSelection(_ tv: UITextView) {
         guard !editing, tv.markedTextRange == nil else { return }
@@ -672,14 +698,127 @@ final class NoteTextView: UITextView {
         if textContainerInset != inset { textContainerInset = inset }
         super.layoutSubviews()
         if endPending, window != nil, bounds.height > 0 { scrollToEnd() }
+        else if caretPending, window != nil, bounds.height > 0 {
+            scrollCaretIntoView(animated: false)
+            layoutVisible()
+        }
+    }
+
+    // MARK: a width change (rotation, iPhone Duo's pose)
+
+    /// What is on screen before the width changes, put back after the rewrap: the caret's line if it was in view, else
+    /// the line at the top. Without it a rotation showed an empty page for the whole turn (the old scroll offset over
+    /// text rewrapped shorter, or not laid out there yet) and then the text jumped a line into place.
+    private enum Anchor { case caret, top(character: Int, offset: CGFloat) }
+    private var anchor: Anchor?
+
+    override var frame: CGRect {
+        willSet { if newValue.width != frame.width { takeAnchor() } }
+        didSet { if frame.width != oldValue.width { restoreAnchor() } }
+    }
+    override var bounds: CGRect {
+        willSet { if newValue.width != bounds.width { takeAnchor() } }
+        didSet { if bounds.width != oldValue.width { restoreAnchor() } }
+    }
+
+    /// Called before a turn moves anything (Editors.deviceTurned): the picture and the anchor are taken from the screen
+    /// as it is. Safe areas and insets change before the text view's width does, and a picture taken at the width
+    /// change was already 40 points low. The width change itself takes them too where no turn was heard of (iPhone
+    /// Duo's pose).
+    func prepareForTurn() { takeAnchor() }
+
+    private var turnCovered = false
+    private func takeAnchor() {
+        guard anchor == nil, window != nil, bounds.width > 0, bounds.height > 0, textStorage.length > 0 else { return }
+        if !turnCovered {
+            turnCovered = true
+            coverTurn()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in self?.turnCovered = false }
+        }
+        guard !endPending else { return }
+        let lm = layoutManager
+        let a = adjustedContentInset
+        let visibleTop = contentOffset.y + a.top - textContainerInset.top
+        let visibleBottom = contentOffset.y + bounds.height - a.bottom - textContainerInset.top
+        let caret = caretLine()
+        if caret.maxY > visibleTop, caret.minY < visibleBottom, isFirstResponder { anchor = .caret; return }
+        let g = lm.glyphIndex(for: CGPoint(x: 0, y: max(0, visibleTop)), in: textContainer)
+        let line = lm.lineFragmentRect(forGlyphAt: g, effectiveRange: nil)
+        anchor = .top(character: lm.characterIndexForGlyph(at: g), offset: visibleTop - line.minY)
+    }
+
+    private func restoreAnchor() {
+        guard let a = anchor else { return }
+        anchor = nil
+        // The container takes the new width now, not at the next layout, so the anchor's line is found in the rewrap.
+        if textContainer.size.width != bounds.width { textContainer.size.width = bounds.width }
+        switch a {
+        case .caret:
+            // Kept in view until the keyboard has its new frame too (it comes after the turn): placed over the old
+            // orientation's keyboard, the text jumped 7 lines when the keyboard's frame arrived.
+            caretPending = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in self?.caretPending = false }
+            scrollCaretIntoView(animated: false)
+        case .top(let c, let offset):
+            let lm = layoutManager
+            let g = lm.glyphIndexForCharacter(at: min(c, max(0, textStorage.length - 1)))
+            let line = lm.lineFragmentRect(forGlyphAt: g, effectiveRange: nil)
+            let ins = adjustedContentInset
+            let maxY = max(-ins.top, contentSize.height + ins.bottom - bounds.height)
+            let y = min(maxY, max(-ins.top, line.minY + offset + textContainerInset.top - ins.top))
+            if abs(y - contentOffset.y) > 0.5 { contentOffset.y = y }
+        }
+        layoutVisible()
+        setNeedsLayout()
+        layoutIfNeeded()
+    }
+
+    /// The text in view laid out now, so the next frame draws it (a rewrap left it for later: empty frames).
+    private func layoutVisible() {
+        let visible = CGRect(x: 0, y: contentOffset.y - textContainerInset.top, width: bounds.width, height: bounds.height)
+        layoutManager.ensureLayout(forBoundingRect: visible, in: textContainer)
+    }
+
+    /// The text as it was, laid over the view while the turn runs and faded out with it: UIKit drops the text view's
+    /// drawn text the moment its width changes and draws the rewrapped text only late in the turn, so the page was
+    /// empty for ~0.2 s (the counter bar and the keyboard turned, the text did not).
+    private func coverTurn() {
+        // A bitmap made now: a snapshot view renders its source when the frame is drawn, by which time the source had
+        // moved (40 points low) or lost its text.
+        guard let sup = superview, let w = window, sup.bounds.width > 0, sup.bounds.height > 0 else { return }
+        let r = frame
+        let inWindow = sup.convert(r, to: w)
+        let format = UIGraphicsImageRendererFormat.preferred()
+        format.opaque = true
+        // The screen as drawn (drawHierarchy); the container's layer rendered by hand came out 60 points low.
+        let image = UIGraphicsImageRenderer(size: r.size, format: format).image { _ in
+            w.drawHierarchy(in: CGRect(origin: CGPoint(x: -inWindow.minX, y: -inWindow.minY), size: w.bounds.size), afterScreenUpdates: false)
+        }
+        let snap = UIImageView(image: image)
+        snap.frame = r
+        snap.isUserInteractionEnabled = false
+        sup.insertSubview(snap, aboveSubview: self)
+        UIView.animate(withDuration: 0.3, delay: 0.05, options: [.curveEaseOut]) { snap.alpha = 0 } completion: { _ in
+            snap.removeFromSuperview()
+        }
+    }
+
+    /// The caret's line in the container's coordinates.
+    private func caretLine() -> CGRect {
+        let lm = layoutManager
+        let at = selectedRange.location + selectedRange.length, length = textStorage.length
+        if at >= length, !lm.extraLineFragmentRect.isEmpty { return lm.extraLineFragmentRect }
+        return lm.lineFragmentRect(forGlyphAt: lm.glyphIndexForCharacter(at: min(at, max(0, length - 1))), effectiveRange: nil)
     }
 
     /// A note just opened keeps its end in view (Editors.openAtEnd) through the push, the safe area arriving and the
     /// keyboard, until the person scrolls, moves the caret or types.
     var endPending = false
+    /// The caret's line kept in view through a turn (restoreAnchor), until the person scrolls or a second has passed.
+    var caretPending = false
     override func adjustedContentInsetDidChange() {
         super.adjustedContentInsetDidChange()
-        if endPending { setNeedsLayout() }
+        if endPending || caretPending { setNeedsLayout() }
     }
 
     /// The end of the text just above the keyboard (or the bar), without animation.
