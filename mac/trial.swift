@@ -18,6 +18,7 @@
 //   rename <file>, fieldpaste search|rename|find <file>, selectall [n], savename, jump start|middle|end   (timed)
 //   edits <n> <seed>, dirs <file>                       random typed edits; paragraph directions as JSON
 //   select <location> <length|end>                      a selection in the open note
+//   customize                                           Customize Toolbar… opened and closed; is the search still the bar's
 #if TRIALS
 import AppKit
 import Carbon.HIToolbox
@@ -268,6 +269,16 @@ import Carbon.HIToolbox
             win.setFrame(start, display: true)
             let s = times.sorted()
             record(["resizebench": n, "medianMs": s[s.count / 2], "maxMs": s.last!, "open": app.main.current?.title ?? "-", "length": app.main.current?.length ?? 0])
+        case "customize":
+            // customize: View > Customize Toolbar… opened and closed with Done; records whether the search ⌥⌘F uses is
+            // still the bar's (the palette's copies once took its place)
+            guard let win = app.main.window else { return }
+            record(["searchInBarBefore": app.main.searchIsInBar])
+            win.runToolbarCustomizationPalette(nil)
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            if let sheet = win.attachedSheet { win.endSheet(sheet) }
+            try? await Task.sleep(nanoseconds: 800_000_000)
+            record(["searchInBarAfter": app.main.searchIsInBar, "sheetGone": win.attachedSheet == nil])
         case "manynotes":
             // manynotes <n>: n short notes made at once
             for i in 0..<(Int(w[1]) ?? 10) { _ = Commands.new(app.library, text: "Note text number \(i)", name: nil) }
