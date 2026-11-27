@@ -132,6 +132,15 @@ extension NSToolbarItem.Identifier {
             let change = n.userInfo?[Library.changeKey] as? Library.Change
             MainActor.assumeIsolated { self?.changed(change) }
         }
+        // The bar's buttons moved with ⌘-drag, outside Customize Toolbar…: AppKit tells the delegate nothing of a move,
+        // but saves the bar's new order in the defaults at once (measured on macOS 27), so a change there that leaves
+        // the bar unlike the one measured is measured again.
+        NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, let bar = self.window?.toolbar, bar.items.map(\.itemIdentifier) != self.measuredBar else { return }
+                self.applyMinimum()
+            }
+        }
         known = Set(library.notes.map(\.id))
         editor.observeStorages()
         let first = library.lastOpen.flatMap(library.note(id:))
@@ -358,17 +367,41 @@ extension NSToolbarItem.Identifier {
 
     /// The minimum measured again (Sizer) and applied: to the note's split item, so that the sidebar gives up room
     /// before the note does, and to the window, the same with the sidebar shown or hidden.
-    func applyMinimum() {
+    /// Never more than the screen's visible area: a bar wider than the screen (dozens of spaces, a system that lays the
+    /// bar out wider than measured) leaves some buttons in the » overflow rather than a window that cannot be made
+    /// smaller or seen whole (with the window wider than the screen, Customize Toolbar…'s sheet opened out of sight).
+    /// While Customize Toolbar…'s sheet is up, a minimum larger than the window waits for the sheet to close, so the window
+    /// and the sheet hanging from it stay put under a drag (Apple Notes' window never changes size for its bar either).
+    func applyMinimum(sheetClosed: Bool = false) {
         guard let w = window else { return }
         defer { fitSidebar() }
         let need = sizer.measure()
-        editorMin = need.editor
-        minHeight = need.height
-        split.splitViewItems.last?.minimumThickness = editorMin
+        measuredBar = w.toolbar?.items.map(\.itemIdentifier) ?? []
+        let v = (w.screen ?? NSScreen.main)?.visibleFrame.size ?? NSSize(width: Sizer.widest, height: Sizer.widest)
+        let editor = max(200, min(need.editor, (v.width - Self.sidebarMin).rounded(.down)))
+        let height = max(100, min(need.height, v.height.rounded(.down)))
+        if !sheetClosed, w.toolbar?.customizationPaletteIsRunning == true,
+           Self.sidebarMin + editor > w.frame.width + 0.5 || height > w.frame.height + 0.5 {
+            return   // windowDidEndSheet applies it
+        }
+        editorMin = editor
+        minHeight = height
+        // The note's share less the divider: the measure took the window's width beside the sidebar, the divider in it.
+        split.splitViewItems.last?.minimumThickness = editorMin - split.splitView.dividerThickness
         w.minSize = minimumSize
         // A window smaller than the new minimum (a button added, an old saved frame) grows to it, kept on its screen.
         if w.frame.width < w.minSize.width - 0.5 || w.frame.height < w.minSize.height - 0.5 { fitOnScreen() }
     }
+
+    /// Customize Toolbar… done: measured again whatever happened in the sheet, since a button moved within the bar (New
+    /// Note dragged over the sidebar) tells the delegate nothing, and the order decides the minimum; a measure of the
+    /// same bar is the one kept. The bar still reports its palette running while the sheet's end is announced (macOS
+    /// 13, measured): the minimum that waited is applied without asking it.
+    private var measuredBar: [NSToolbarItem.Identifier] = []
+
+    func windowDidEndSheet(_ notification: Notification) { applyMinimum(sheetClosed: true) }
+    /// Another display, another visible area: the minimum is cut to it again (the measure itself is kept).
+    func windowDidChangeScreen(_ notification: Notification) { applyMinimum() }
 
     /// The sidebar never wider than the window leaves beside the narrowest whole note. AppKit opens a hidden sidebar
     /// (⌃⌘S, the toolbar's button, or the peek when the pointer rests at the window's edge on macOS 26) at the width it
