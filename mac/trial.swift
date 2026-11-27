@@ -20,6 +20,9 @@
 //   select <location> <length|end>                      a selection in the open note
 //   minimum                                             the window's measured minimum and the time one measure takes
 //   customize                                           Customize Toolbar… opened and closed; is the search still the bar's
+//   bar <id,id,…>, barsweep <random> <seed> [from] [n]   the toolbar's items set; every bar the sheet allows, its minimum checked
+//   custflow                                            Customize Toolbar… with items taken out and put back, the sheet's place
+//   sidebar <width>|hide|show                           the sidebar set; what of the bar shows
 #if TRIALS
 import AppKit
 import Carbon.HIToolbox
@@ -304,7 +307,209 @@ import Carbon.HIToolbox
             let t0 = CACurrentMediaTime()
             app.main.applyMinimum()
             let ms = (CACurrentMediaTime() - t0) * 1000
-            record(["minimum": NSStringFromSize(app.main.minimumSize), "editorMin": app.main.editorMin, "measureMs": ms])
+            record(["minimum": NSStringFromSize(app.main.minimumSize), "editorMin": app.main.editorMin, "measureMs": ms,
+                    "windowMin": NSStringFromSize(app.main.window?.minSize ?? .zero), "frame": NSStringFromRect(app.main.window?.frame ?? .zero),
+                    "bar": (app.main.window?.toolbar?.items ?? []).map(\.itemIdentifier.rawValue)])
+        case "bar":
+            // bar <id,id,…>: the toolbar's items replaced, one by one as Customize Toolbar… does, then the minimum
+            guard let tb = app.main.window?.toolbar else { return }
+            let ids = w.count > 1 && !w[1].isEmpty ? w[1].components(separatedBy: ",") : []
+            while !tb.items.isEmpty { tb.removeItem(at: 0) }
+            for (i, id) in ids.enumerated() { tb.insertItem(withItemIdentifier: NSToolbarItem.Identifier(id), at: i) }
+            try? await Task.sleep(nanoseconds: 200_000_000)
+            // The real window's own narrowest width that shows as much as at 1700 pt, the sidebar at its narrowest
+            guard let win = app.main.window else { return }
+            let keep = win.minSize, ed = app.main.split.splitViewItems[1], edMin = ed.minimumThickness
+            win.minSize = NSSize(width: 100, height: 100); ed.minimumThickness = 10
+            func seen(_ width: CGFloat) -> Int {
+                var f = win.frame; f.size.width = width; win.setFrame(f, display: false)
+                app.main.split.splitView.setPosition(MainWindow.sidebarMin, ofDividerAt: 0)
+                win.layoutIfNeeded()
+                let spacers: Set<NSToolbarItem.Identifier> = [.flexibleSpace, .space, .sidebarTrackingSeparator]
+                return (tb.visibleItems ?? []).filter { !spacers.contains($0.itemIdentifier) }.count
+            }
+            let all = seen(1700)
+            var lo: CGFloat = 300, hi: CGFloat = 1700
+            while hi - lo > 1 { let mid = ((lo + hi) / 2).rounded(); if seen(mid) >= all { hi = mid } else { lo = mid } }
+            win.minSize = keep; ed.minimumThickness = edMin
+            record(["realNarrowestShown": hi, "title": win.title, "sideWidth": app.main.split.splitViewItems[0].viewController.view.frame.width])
+            record(["bar": tb.items.map(\.itemIdentifier.rawValue), "minimum": NSStringFromSize(app.main.minimumSize),
+                    "frame": NSStringFromRect(app.main.window!.frame),
+                    "visible": (tb.visibleItems ?? []).map(\.itemIdentifier.rawValue)])
+        case "barsweep":
+            // barsweep <random> <seed>: every subset of Customize Toolbar…'s items in the default order, then <random> bars
+            // of random items in random order with repeated spaces, and the edge cases (empty, everything, the bar that
+            // once made a 2400 pt minimum); for each, the minimum must fit the screen's visible area, the window must
+            // shrink to it, and the real bar at the minimum must show as many items as at the screen's full width.
+            guard let win = app.main.window, let tb = win.toolbar, let screen = win.screen ?? NSScreen.main else { return }
+            let palette: [NSToolbarItem.Identifier] = [.toggleSidebar, .sidebarTrackingSeparator, .newNote, .flexibleSpace,
+                                                       .share, .more, .search, .pin, .rename, .findInNote, .deleteNote, .space]
+            var bars: [[NSToolbarItem.Identifier]] = [[], palette, app.main.toolbarDefaultItemIdentifiers(tb),
+                [.toggleSidebar, .newNote, .sidebarTrackingSeparator],
+                [.sidebarTrackingSeparator], [.search], [.search, .sidebarTrackingSeparator, .toggleSidebar],
+                palette.reversed(), Array(repeating: .space, count: 60) + [.search], Array(repeating: .flexibleSpace, count: 30)]
+            for mask in 1..<(1 << palette.count) { bars.append(palette.indices.filter { mask & (1 << $0) != 0 }.map { palette[$0] }) }
+            var seed = UInt64(w.count > 2 ? Int(w[2]) ?? 1 : 1)
+            func next(_ n: Int) -> Int { seed = seed &* 6364136223846793005 &+ 1442695040888963407; return Int((seed >> 33) % UInt64(n)) }
+            for _ in 0..<(w.count > 1 ? Int(w[1]) ?? 0 : 0) {
+                var b = palette.filter { _ in next(2) == 0 }
+                for _ in 0..<next(4) { b.append([.space, .flexibleSpace][next(2)]) }
+                for i in b.indices.reversed() { b.swapAt(i, next(i + 1)) }
+                bars.append(b)
+            }
+            let v = screen.visibleFrame
+            var fails: [[String: Any]] = [], slow = 0.0, widest = 0.0, tallest = 0.0, unlike = 0, slowBar = "", times: [Double] = []
+            let t00 = CACurrentMediaTime()
+            // [from] [count]: a slice of the list, for one process each (AppKit's toolbar grows slower with every change in
+            // one process: ~0.06 s a bar at first, ~0.4 s after 1,500 on macOS 27)
+            let from = w.count > 3 ? Int(w[3]) ?? 0 : 0, take = w.count > 4 ? Int(w[4]) ?? bars.count : bars.count
+            bars = Array(bars[min(from, bars.count)..<min(from + take, bars.count)])
+            for (n, b) in bars.enumerated() {
+                // Back to the run loop between bars, as between the person's changes: the split view's delayed requests
+                // (one per resize) piled up unrun and made every later resize slower.
+                try? await Task.sleep(nanoseconds: 1_000_000)
+                autoreleasepool {
+                if n % 250 == 0 { FileHandle.standardError.write(Data("barsweep \(n)/\(bars.count) \(Int(CACurrentMediaTime() - t00)) s\n".utf8)) }
+                while !tb.items.isEmpty { tb.removeItem(at: 0) }
+                for (i, id) in b.enumerated() { tb.insertItem(withItemIdentifier: id, at: i) }
+                let t0 = CACurrentMediaTime()
+                app.main.applyMinimum()
+                let ms = (CACurrentMediaTime() - t0) * 1000
+                times.append(ms)
+                if ms > slow { slow = ms; slowBar = b.map(\.rawValue).joined(separator: ",") }
+                let m = win.minSize
+                widest = max(widest, m.width); tallest = max(tallest, m.height)
+                func count() -> Int {
+                    win.layoutIfNeeded()
+                    let spacers: Set<NSToolbarItem.Identifier> = [.flexibleSpace, .space, .sidebarTrackingSeparator]
+                    return (tb.visibleItems ?? []).filter { !spacers.contains($0.itemIdentifier) }.count
+                }
+                // The bar at the screen's full width and at the minimum, the sidebar at its narrowest (the part of the bar
+                // over it holds what that width holds at any window width) and then hidden.
+                let side = app.main.split.splitViewItems[0]
+                var counts: [Int] = []
+                for collapsed in [false, true] {
+                    side.isCollapsed = collapsed
+                    for width in [v.width, m.width] {
+                        win.setFrame(NSRect(x: v.minX, y: v.minY, width: width, height: m.height), display: false)
+                        if !collapsed { app.main.split.splitView.setPosition(MainWindow.sidebarMin, ofDividerAt: 0) }
+                        var c = count()
+                        // The bar follows the divider a turn later at times (macOS 27): a short count is taken again once
+                        // the run loop has turned, as the person's next look would.
+                        if width == m.width, c < counts.last ?? 0 {
+                            RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.25))
+                            c = count()
+                        }
+                        counts.append(c)
+                    }
+                }
+                side.isCollapsed = false
+                win.setFrame(NSRect(x: v.minX, y: v.minY, width: m.width, height: m.height), display: false)
+                win.layoutIfNeeded()
+                let f = win.frame
+                let ids = b.map(\.rawValue).joined(separator: ",")
+                if m.width > v.width + 0.5 || m.height > v.height + 0.5 || abs(f.width - m.width) > 0.5 || abs(f.height - m.height) > 0.5 {
+                    fails.append(["bar": ids, "min": NSStringFromSize(m), "frame": NSStringFromRect(f)])
+                }
+                if counts[1] < counts[0] || counts[3] < counts[2] {
+                    unlike += 1
+                    if unlike <= 20 { fails.append(["bar": ids, "shownWideMin": [counts[0], counts[1]], "hiddenWideMin": [counts[2], counts[3]], "min": NSStringFromSize(m)]) }
+                }
+            } }
+            times.sort()
+            record(["barsweep": bars.count, "fails": fails, "barShortAtMinimum": unlike, "slowestMs": slow, "slowestBar": slowBar,
+                    "medianMs": times.isEmpty ? 0 : times[times.count / 2], "p95Ms": times.isEmpty ? 0 : times[times.count * 95 / 100],
+                    "widestMin": widest, "tallestMin": tallest, "visible": NSStringFromRect(v),
+                    "seconds": CACurrentMediaTime() - t00])
+        case "custflow":
+            // custflow: Customize Toolbar… at the smallest and at a screen-wide window; items taken out and put back while
+            // the sheet is up, one by one as drags do; then the bar that once made a 2400 pt minimum. Records the window,
+            // the sheet and the screen at each step: the sheet must be on the screen, the window must not move or grow
+            // under it, and after Done the window must hold the minimum.
+            guard let win = app.main.window, let tb = win.toolbar, let screen = win.screen ?? NSScreen.main else { return }
+            let v = screen.visibleFrame
+            func state(_ label: String) {
+                // The measure the change asked for, timed here rather than on the next turn (the same work, once).
+                let t0 = CACurrentMediaTime()
+                app.main.applyMinimum()
+                let ms = (CACurrentMediaTime() - t0) * 1000
+                win.layoutIfNeeded()
+                let sheet = win.attachedSheet?.frame
+                record(["step": label, "frame": NSStringFromRect(win.frame), "min": NSStringFromSize(win.minSize),
+                        "sheet": sheet.map(NSStringFromRect) ?? "-", "sheetOnScreen": sheet.map { v.insetBy(dx: -1, dy: -1).contains($0) } ?? false,
+                        "bar": tb.items.map(\.itemIdentifier.rawValue).joined(separator: ","),
+                        "visible": (tb.visibleItems ?? []).count, "ms": ms])
+            }
+            func setBar(_ ids: [NSToolbarItem.Identifier]) {
+                while !tb.items.isEmpty { tb.removeItem(at: 0) }
+                for (i, id) in ids.enumerated() { tb.insertItem(withItemIdentifier: id, at: i) }
+            }
+            let wait = { (s: Double) in try? await Task.sleep(nanoseconds: UInt64(s * 1e9)) }
+            let defaults = app.main.toolbarDefaultItemIdentifiers(tb)
+            for size in ["smallest", "screen"] {
+                setBar(defaults); await wait(0.3)
+                let m = win.minSize
+                win.setFrame(size == "smallest" ? NSRect(x: v.minX + 40, y: v.minY + 40, width: m.width, height: m.height) : v, display: true)
+                await wait(0.3)
+                state("\(size): before")
+                win.runToolbarCustomizationPalette(nil)
+                await wait(1.2)
+                state("\(size): sheet up")
+                for id in [NSToolbarItem.Identifier.flexibleSpace, .share, .more, .search] {
+                    if let i = tb.items.firstIndex(where: { $0.itemIdentifier == id }) { tb.removeItem(at: i) }
+                    state("\(size): took out \(id.rawValue), at once")
+                    await wait(0.5)
+                    state("\(size): took out \(id.rawValue)")
+                }
+                for id in [NSToolbarItem.Identifier.pin, .rename, .findInNote, .deleteNote, .flexibleSpace, .share, .more, .search] {
+                    tb.insertItem(withItemIdentifier: id, at: tb.items.count)
+                    state("\(size): put in \(id.rawValue), at once")
+                    await wait(0.5)
+                    state("\(size): put in \(id.rawValue)")
+                }
+                if let sheet = win.attachedSheet { win.endSheet(sheet) }
+                await wait(1.0)
+                state("\(size): done")
+            }
+            // The bar of the recording, made in the sheet, then Customize Toolbar… again and the default set back.
+            win.runToolbarCustomizationPalette(nil)
+            await wait(1.2)
+            for id in [NSToolbarItem.Identifier.flexibleSpace, .share, .more, .search, .pin, .rename, .findInNote, .deleteNote] {
+                if let i = tb.items.firstIndex(where: { $0.itemIdentifier == id }) { tb.removeItem(at: i) }
+                await wait(0.3)
+            }
+            if let i = tb.items.firstIndex(where: { $0.itemIdentifier == .sidebarTrackingSeparator }) {
+                tb.removeItem(at: i); tb.insertItem(withItemIdentifier: .sidebarTrackingSeparator, at: tb.items.count)
+            }
+            await wait(0.5)
+            state("recording's bar, sheet up")
+            if let sheet = win.attachedSheet { win.endSheet(sheet) }
+            await wait(1.0)
+            state("recording's bar, done")
+            let m = win.minSize
+            win.setFrame(NSRect(x: v.minX + 40, y: v.minY + 40, width: m.width, height: m.height), display: true)
+            await wait(0.3)
+            state("recording's bar, smallest")
+            win.runToolbarCustomizationPalette(nil)
+            await wait(1.2)
+            state("recording's bar, sheet again")
+            setBar(defaults)
+            await wait(0.5)
+            state("default set dragged back, sheet up")
+            if let sheet = win.attachedSheet { win.endSheet(sheet) }
+            await wait(1.0)
+            state("default set, done")
+        case "sidebar":
+            // sidebar <width>|hide|show: the real window's sidebar, then what of the bar is visible
+            let item = app.main.split.splitViewItems[0]
+            switch w[1] {
+            case "hide": item.isCollapsed = true
+            case "show": item.isCollapsed = false
+            default: app.main.split.splitView.setPosition(CGFloat(Double(w[1]) ?? 182), ofDividerAt: 0)
+            }
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            record(["sidebar": w[1], "width": item.viewController.view.frame.width, "collapsed": item.isCollapsed,
+                    "visible": (app.main.window?.toolbar?.visibleItems ?? []).map(\.itemIdentifier.rawValue)])
         case "toolbarfit":
             // toolbarfit: the narrowest window (sidebar shown, then hidden) at which every toolbar item is in the bar, not in
             // its » overflow; the split view's own minimums switched off meanwhile

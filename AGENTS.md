@@ -232,8 +232,11 @@ Keep both objects alive (the library holds them weakly).
   look), and any other window of the app floats too when it becomes key. `window.swift` the window: first size
   926 x 606 (TextEdit's 98 x 32 characters in 13 pt SF, sidebar 241; cut to a smaller screen's visible area), the
   minimum measured, not set: `sizer.swift` lays a copy of the bar out in a window never shown until a button would go
-  into the » overflow or Search would fold to its magnifier (644 pt wide on macOS 26-27, 707 on 13), kept in the
-  defaults with the bar's items and the system it was measured on; one minimum with the sidebar shown or hidden (the
+  into the » overflow or Search would fold to its magnifier (645 pt wide on macOS 27, 707 on 13: the last point of the search plus one, a fit that holds reached from a narrower and from a wider window), counting only
+  what the bar shows at its widest (an item put before the sidebar's tracking separator can stay in the overflow at any
+  window width: the sidebar's part of the bar is as wide as the sidebar; waiting for it made a 2400 pt minimum,
+  2026-11-27), kept in the defaults with the bar's items and the system it was measured on, cut to the screen's visible
+  area, measured again on every change of the bar (added, removed, or moved: a ⌘-drag tells the delegate nothing, so the bar's autosaved order in the defaults is watched) and when Customize Toolbar… closes, where a larger minimum waits; `trial barsweep` checks all 4,605 bars of the palette (every subset, random orders, repeated spaces, the edge cases); one minimum with the sidebar shown or hidden (the
   window never changes size when the sidebar comes or goes, as Notes and Finder), sidebar 182-360 pt and never wider
   than the window leaves beside the narrowest whole note. The system's window moves (tiles, Center, Fill, Return to
   Previous Size, drag out) are the window manager's and AppKit's own, with the frame autosave carrying the tiling
