@@ -213,9 +213,8 @@ struct Row: Identifiable, Hashable {
 
     /// A note was shown (show) and its editor has not been seen in the navigation stack since.
     @ObservationIgnored private var opening: Date?
-    /// The pop that was under way when the note was shown (a Back just before the tap): running, and when it ended.
+    /// The pop that was under way when the note was shown (a Back just before the tap) is still running.
     @ObservationIgnored private var popRunning = false
-    @ObservationIgnored private var popEnded: Date?
     @ObservationIgnored private var watchQueued = false
     @ObservationIgnored private var unheardSince: Date?
 
@@ -233,13 +232,11 @@ struct Row: Identifiable, Hashable {
     private func pushEditor() {
         opening = Date()
         unheardSince = nil
-        popEnded = nil
         popRunning = false
         if let tc = editors.stackTransition, !editors.editorOnTop {
             popRunning = true
             tc.animate(alongsideTransition: nil) { [weak self] _ in
                 self?.popRunning = false
-                self?.popEnded = Date()
             }
         }
         if path.isEmpty { path = [.editor] }
@@ -274,13 +271,12 @@ struct Row: Identifiable, Hashable {
         }
     }
 
-    /// Whether the editor being opened is in UIKit's stack, its path kept, and the pop before it over (its late
-    /// write comes just after its end): from then on the push is UIKit's, and a Back, even one mid-push, is the
-    /// person's (testBackMidPush). Also asked by the editor's host the moment it joins a screen; changes no state
-    /// SwiftUI reads.
+    /// Whether the editor being opened is in UIKit's stack, with the pop from before it over: from then on the push
+    /// is UIKit's, and a Back, even one mid-push, is the person's (testBackMidPush). Every late pop write seen came
+    /// while UIKit's stack still held only the list. Also asked by the editor's host the moment it joins a screen;
+    /// changes no state SwiftUI reads.
     @discardableResult func editorArrived(pathKept: Bool = true) -> Bool {
-        guard opening != nil, editors.editorOnTop, !pathKept || !path.isEmpty, !popRunning,
-              popEnded.map({ Date().timeIntervalSince($0) > 0.3 }) ?? true else { return false }
+        guard opening != nil, editors.editorOnTop, !pathKept || !path.isEmpty, !popRunning else { return false }
         opening = nil
         unheardSince = nil
         return true
