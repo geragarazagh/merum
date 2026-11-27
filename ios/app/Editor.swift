@@ -405,14 +405,25 @@ final class EditorDock: UIView {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0 / 60) { [weak self] in self?.tryFocus() }
     }
 
-    /// Whether the editor's screen is on its way out: the navigation stack has already put another screen on top (a
-    /// Back the model has not heard of yet).
-    var editorLeaving: Bool {
-        guard let vc = sequence(first: container as UIResponder, next: \.next).compactMap({ $0 as? UIViewController }).first,
-              let nav = vc.navigationController else { return false }
-        var mine: UIViewController = vc
-        while let p = mine.parent, p !== nav { mine = p }
-        return nav.topViewController !== mine || mine.isMovingFromParent
+    /// The app's one navigation stack, found from the window: the editor's own screen may already be out of it.
+    private var nav: UINavigationController? {
+        func find(_ vc: UIViewController?) -> UINavigationController? {
+            guard let vc else { return nil }
+            if let n = vc as? UINavigationController { return n }
+            for c in vc.children { if let n = find(c) { return n } }
+            return nil
+        }
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        return find((container.window ?? scenes.flatMap(\.windows).first { $0.isKeyWindow } ?? scenes.first?.windows.first)?.rootViewController)
+    }
+
+    /// The stack's push or pop under way (a back swipe held half-way too).
+    var stackTransition: UIViewControllerTransitionCoordinator? { nav?.transitionCoordinator }
+    var stackMoving: Bool { stackTransition != nil }
+
+    /// The editor is the stack's top screen (or on its way there).
+    var editorOnTop: Bool {
+        (nav?.viewControllers.count ?? 0) > 1   // the stack is the list and, above it, the editor
     }
 
     /// The editor left the screen: the bar goes with it.

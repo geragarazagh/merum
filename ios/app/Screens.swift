@@ -336,6 +336,8 @@ struct EditorHost: UIViewRepresentable {
                 addSubview(c)
             }
             editors?.showCurrent()
+            // The push has reached UIKit: from now on a Back is the person's (Model.editorArrived).
+            editors?.model?.editorArrived()
         }
     }
 
