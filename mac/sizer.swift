@@ -43,8 +43,9 @@ import AppKit
             return Need(editor: e, height: h, perSidebar: k)
         }
         let need = measured(bar)
-        UserDefaults.standard.set(["signature": signature, "editor": Double(need.editor), "height": Double(need.height),
-                                   "perSidebar": Double(need.perSidebar)], forKey: key)   // nosemgrep (a measured window size, not a secret)
+        let stored: [String: Any] = ["signature": signature, "editor": Double(need.editor), "height": Double(need.height),
+                                     "perSidebar": Double(need.perSidebar)]
+        UserDefaults.standard.set(stored, forKey: key)   // nosemgrep (a measured window size, not a secret)
         return need
     }
 
