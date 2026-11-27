@@ -233,14 +233,22 @@ Keep both objects alive (the library holds them weakly).
   926 x 606 (TextEdit's 98 x 32 characters in 13 pt SF, sidebar 241; cut to a smaller screen's visible area), the
   minimum measured, not set: `sizer.swift` lays a copy of the bar out in a window never shown until a button would go
   into the » overflow or Search would fold to its magnifier (645 pt wide on macOS 27, 707 on 13: the last point of the search plus one, a fit that holds reached from a narrower and from a wider window), counting only
-  what the bar shows at its widest (an item put before the sidebar's tracking separator can stay in the overflow at any
-  window width: the sidebar's part of the bar is as wide as the sidebar; waiting for it made a 2400 pt minimum,
-  2026-11-27), kept in the defaults with the bar's items and the system it was measured on, cut to the screen's visible
+  what the bar shows at its widest, and how much more the note's part needs beside a wider sidebar (a third of a point a
+  point on macOS 13 and 27: the sidebar is never dragged wider than leaves it), kept in the defaults with the bar's items and the system it was measured on, cut to the screen's visible
   area, measured again on every change of the bar (added, removed, or moved: a ⌘-drag tells the delegate nothing, so the bar's autosaved order in the defaults is watched) and when Customize Toolbar… closes, where a larger minimum waits; `trial barsweep` checks all 4,605 bars of the palette (every subset, random orders, repeated spaces, the edge cases); one minimum with the sidebar shown or hidden (the
   window never changes size when the sidebar comes or goes, as Notes and Finder), sidebar 182-360 pt and never wider
   than the window leaves beside the narrowest whole note. The system's window moves (tiles, Center, Fill, Return to
   Previous Size, drag out) are the window manager's and AppKit's own, with the frame autosave carrying the tiling
-  state; nothing of ours sets the frame while they run. Toolbar: sidebar, New Note, Share, «…», Search.
+  state; nothing of ours sets the frame while they run. Toolbar: sidebar, New Note, Share, «…», Search. Its start is
+  fixed: the sidebar button and the sidebar's tracking separator can't be moved or taken out and nothing goes before
+  the separator (`toolbarImmovableItemIdentifiers`, `toolbar(_:itemIdentifier:canBeInsertedAt:)`, macOS 13+); a stored
+  bar unlike that is repaired at launch and after any change, a turn later, never inside AppKit's own change, and never
+  left with nothing after the separator (a flexible space goes there). On macOS 27 any item before the separator made
+  the bar lay itself out on every display cycle (50-90 % CPU idle, wiggling), and a bar with nothing over the note made
+  Customize Toolbar… throw as it opened (no sheet, ever again for that bar): his two bars of 2026-11-27 did both. After
+  every change of the bar its title bar views are laid out again (AppKit decides » and Search's fold only when the width
+  changes). `trial monkey` (mac/monkey.swift) is the check: random sheet, ⌘-drag, resize and
+  sidebar actions, at rest no layout of the bar, CPU ~0, the right-click menu, nothing in » at the minimum.
   `sidebar.swift` the list (two-line rows as Apple Notes, «Pinned» and «Notes» groups that scroll with the rows,
   selection, rename, drag inside a group, delete, copy, search, animated rows; while a row is dragged the rows stay as
   they are and the move is made after the drag session ends: a change under it crashed AppKit, 2026-11-25 14:09:58;

@@ -103,6 +103,7 @@ extension NSToolbarItem.Identifier {
         tb.autosavesConfiguration = true
         w.toolbar = tb
         w.toolbarStyle = .unified
+        repairBar()
         applyMinimum()
         // The person's size and place, for good, as AppKit keeps them (with the system's tiling state, so a window left
         // in a tiled half comes back in it, and leaving the tile still gives back the size from before it); the first
@@ -134,11 +135,14 @@ extension NSToolbarItem.Identifier {
         }
         // The bar's buttons moved with ⌘-drag, outside Customize Toolbar…: AppKit tells the delegate nothing of a move,
         // but saves the bar's new order in the defaults at once (measured on macOS 27), so a change there that leaves
-        // the bar unlike the one measured is measured again.
+        // the bar unlike the one measured is measured again. The save comes from inside AppKit's change of the bar, at
+        // every single item: the bar is repaired and measured a turn later, once (repaired at once, an item put back
+        // while a change was taking items out of the bar made it never empty: a main thread stuck for minutes in the
+        // monkey test, 2026-11-27).
         NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
-                guard let self, let bar = self.window?.toolbar, bar.items.map(\.itemIdentifier) != self.measuredBar else { return }
-                self.applyMinimum()
+                guard let self, !self.repairing, let bar = self.window?.toolbar, bar.items.map(\.itemIdentifier) != self.measuredBar else { return }
+                self.settleSoon()
             }
         }
         known = Set(library.notes.map(\.id))
@@ -385,6 +389,7 @@ extension NSToolbarItem.Identifier {
             return   // windowDidEndSheet applies it
         }
         editorMin = editor
+        perSidebar = need.perSidebar
         minHeight = height
         // The note's share less the divider: the measure took the window's width beside the sidebar, the divider in it.
         split.splitViewItems.last?.minimumThickness = editorMin - split.splitView.dividerThickness
@@ -399,7 +404,7 @@ extension NSToolbarItem.Identifier {
     /// 13, measured): the minimum that waited is applied without asking it.
     private var measuredBar: [NSToolbarItem.Identifier] = []
 
-    func windowDidEndSheet(_ notification: Notification) { applyMinimum(sheetClosed: true) }
+    func windowDidEndSheet(_ notification: Notification) { repairBar(); applyMinimum(sheetClosed: true); relayoutBar() }
     /// Another display, another visible area: the minimum is cut to it again (the measure itself is kept).
     func windowDidChangeScreen(_ notification: Notification) { applyMinimum() }
 
@@ -409,12 +414,18 @@ extension NSToolbarItem.Identifier {
     /// width of the sidebar (his recording 2026-11-27), and during the peek, from inside AppKit's own layout, into a
     /// crash (-[NSSplitView _cancelProactivePeek] on a null pointer, the monkey test 2026-11-27). Kept within the room
     /// on every change of the window's size, the sidebar comes back as wide as it fits, the window never moves.
+    /// The whole note beside a wider sidebar needs a little more (Sizer.Need.perSidebar): the widest sidebar that leaves
+    /// it, to the point.
     func fitSidebar() {
         guard let w = window else { return }
-        let room = (w.contentLayoutRect.width - editorMin).rounded(.down)
-        let most = max(Self.sidebarMin, min(Self.sidebarMax, room))
+        let width = w.contentLayoutRect.width
+        func fits(_ side: CGFloat) -> Bool { side + editorMin + (perSidebar * (side - Self.sidebarMin)).rounded(.up) <= width }
+        var most = min(Self.sidebarMax, ((width - editorMin + perSidebar * Self.sidebarMin) / (1 + perSidebar)).rounded(.down))
+        while most > Self.sidebarMin && !fits(most) { most -= 1 }
+        most = max(Self.sidebarMin, most)
         if sidebar.maximumThickness != most { sidebar.maximumThickness = most }
     }
+    private var perSidebar: CGFloat = 0
 
     /// The frame kept within what it must be: never under the minimum, never off its screen. An autosaved frame from a
     /// larger screen or another display arrangement is brought into the visible area here, before the window shows.
@@ -460,11 +471,64 @@ extension NSToolbarItem.Identifier {
     // Every command here is also in the menu bar (HIG: the toolbar is never the only way).
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [.toggleSidebar, .sidebarTrackingSeparator, .newNote, .flexibleSpace, .share, .more, .search]
+        Self.fixedItems + [.newNote, .flexibleSpace, .share, .more, .search]
     }
+
+    /// The start of the bar, fixed: the sidebar button over the list, then the sidebar's tracking separator; neither can
+    /// be dragged or taken out, and nothing goes before the separator (Notes on macOS 27 takes no drop before its own
+    /// separator either: a button ⌘-dragged over its sidebar lands after it). An item there sits in the
+    /// part of the bar as wide as the sidebar, falls into the » overflow when it does not fit, and with any such item
+    /// AppKit's bar lays itself out again on every display cycle (measured on macOS 27, 2026-11-27: 50-80 % of a core
+    /// with the window idle, the bar's buttons wiggling, the right-click menu not coming, a beachball at times; his two
+    /// looks that day: [sidebar, New Note, separator] and [sidebar, Share, separator]).
+    static let fixedItems: [NSToolbarItem.Identifier] = [.toggleSidebar, .sidebarTrackingSeparator]
+
+    func toolbarImmovableItemIdentifiers(_ toolbar: NSToolbar) -> Set<NSToolbarItem.Identifier> { Set(Self.fixedItems) }
+
+    /// Customize Toolbar… and ⌘-drag ask before every drop: the fixed items only where they are, the rest only after them
+    /// (NSNotFound is a drag out of the bar, a removal).
+    func toolbar(_ toolbar: NSToolbar, itemIdentifier: NSToolbarItem.Identifier, canBeInsertedAt index: Int) -> Bool {
+        if let i = Self.fixedItems.firstIndex(of: itemIdentifier) { return index == i }
+        return index == NSNotFound || index >= Self.fixedItems.count
+    }
+
+    /// A bar with the fixed start: the sidebar button and the separator first, once each, every other item after them in
+    /// its order. A configuration kept from a build that allowed other bars is repaired, not obeyed.
+    /// Never nothing after the separator: a flexible space there, which looks the same as an empty bar. With nothing over
+    /// the note macOS 27 throws inside Customize Toolbar… as it opens (-[NSToolbarView _beginCustomizationMode], an
+    /// unrecognized selector sent from +[NSToolbarClippedItemsIndicatorViewer willHaveItemsToDisplayForItemViewers:]), the
+    /// sheet never comes and can never be opened again for that bar (measured 2026-11-27; the same with his bar of that
+    /// day, [sidebar, Share, separator]).
+    static func repaired(_ ids: [NSToolbarItem.Identifier]) -> [NSToolbarItem.Identifier] {
+        let rest = ids.filter { !fixedItems.contains($0) }
+        return fixedItems + (rest.isEmpty ? [.flexibleSpace] : rest)
+    }
+
+    /// The bar brought to its fixed start where it is not (a configuration autosaved by an earlier build, or a change
+    /// AppKit made without asking the delegate). Not while Customize Toolbar…'s sheet is up: its end repairs.
+    func repairBar() {
+        guard let tb = window?.toolbar, !tb.customizationPaletteIsRunning else { return }
+        let ids = tb.items.map(\.itemIdentifier), good = Self.repaired(ids)
+        guard ids != good else { return }
+        repairing = true
+        defer { repairing = false }
+        // Only what has to move, item by item as Customize Toolbar… does, so the autosaved configuration follows: the
+        // first place unlike the repaired bar gets its item, moved from further on or put in when missing (a search
+        // left where it is keeps its query).
+        var k = 0
+        while k < good.count {
+            let now = tb.items.map(\.itemIdentifier)
+            if k < now.count && now[k] == good[k] { k += 1; continue }
+            if let j = now.indices.dropFirst(k).first(where: { now[$0] == good[k] }) { tb.removeItem(at: j) }
+            tb.insertItem(withItemIdentifier: good[k], at: k)
+            k += 1
+        }
+        while tb.items.count > good.count { tb.removeItem(at: tb.items.count - 1) }
+    }
+    private var repairing = false
     /// The palette: the default buttons and the «…» menu's note commands, each one click instead of two.
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [.toggleSidebar, .sidebarTrackingSeparator, .newNote, .share, .more, .search,
+        Self.fixedItems + [.newNote, .share, .more, .search,
          .pin, .rename, .findInNote, .deleteNote, .space, .flexibleSpace]
     }
 
@@ -472,9 +536,27 @@ extension NSToolbarItem.Identifier {
     func toolbarWillAddItem(_ notification: Notification) { remeasureSoon(notification) }
 
     private func remeasureSoon(_ n: Notification) {
-        guard (n.object as? NSToolbar) === window?.toolbar, !remeasuring else { return }
-        remeasuring = true   // one measure for the many items a bar adds at once
-        DispatchQueue.main.async { [weak self] in self?.remeasuring = false; self?.applyMinimum() }
+        guard (n.object as? NSToolbar) === window?.toolbar, !repairing else { return }
+        settleSoon()
+    }
+    /// The bar repaired and the minimum measured on the next turn of the run loop, once for the many items a change adds
+    /// or takes out at once.
+    private func settleSoon() {
+        guard !remeasuring else { return }
+        remeasuring = true
+        DispatchQueue.main.async { [weak self] in self?.remeasuring = false; self?.repairBar(); self?.applyMinimum(); self?.relayoutBar() }
+    }
+
+    /// The bar laid out again from its width as it stands. AppKit's bar decides what goes into » and whether Search folds
+    /// to its magnifier when the window's width changes, not when an item comes in: a flexible space dropped into a bar
+    /// at its minimum left Search folded, at a width where the same bar shows it whole, until the window was next resized
+    /// (measured on macOS 27, 2026-11-27, one in a few thousand changes of the monkey test). Every view of the title bar
+    /// marked for layout (no private class looked up), once per change of the bar.
+    func relayoutBar() {
+        guard let w = window, let frame = w.contentView?.superview else { return }
+        func mark(_ v: NSView) { v.needsLayout = true; v.subviews.forEach(mark) }
+        for v in frame.subviews where v !== w.contentView { mark(v) }
+        frame.layoutSubtreeIfNeeded()
     }
     private var remeasuring = false
 
