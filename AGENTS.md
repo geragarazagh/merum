@@ -225,9 +225,14 @@ Keep both objects alive (the library holds them weakly).
   Manager on and off, double presses and a click elsewhere 0.25 s after a show, 0 failures. Keep on Top = the window
   floats the whole time it is shown (switching level on activation blinked it behind other apps' windows, his first
   look), and any other window of the app floats too when it becomes key. `window.swift` the window: first size
-  926 x 606 (TextEdit's 98 x 32 characters in 13 pt SF, sidebar 241), minimum 542 x 332 (the toolbar's buttons need
-  328 pt beside a 182 pt sidebar, measured; five list rows), sidebar 182-360 pt; a width at which a toolbar button
-  goes into the » overflow raises the minimum on the spot. Toolbar: sidebar, New Note, Share, «…», Search.
+  926 x 606 (TextEdit's 98 x 32 characters in 13 pt SF, sidebar 241; cut to a smaller screen's visible area), the
+  minimum measured, not set: `sizer.swift` lays a copy of the bar out in a window never shown until a button would go
+  into the » overflow or Search would fold to its magnifier (644 pt wide on macOS 26-27, 707 on 13), kept in the
+  defaults with the bar's items and the system it was measured on; one minimum with the sidebar shown or hidden (the
+  window never changes size when the sidebar comes or goes, as Notes and Finder), sidebar 182-360 pt and never wider
+  than the window leaves beside the narrowest whole note. The system's window moves (tiles, Center, Fill, Return to
+  Previous Size, drag out) are the window manager's and AppKit's own, with the frame autosave carrying the tiling
+  state; nothing of ours sets the frame while they run. Toolbar: sidebar, New Note, Share, «…», Search.
   `sidebar.swift` the list (two-line rows as Apple Notes, «Pinned» and «Notes» groups that scroll with the rows,
   selection, rename, drag inside a group, delete, copy, search, animated rows; while a row is dragged the rows stay as
   they are and the move is made after the drag session ends: a change under it crashed AppKit, 2026-11-25 14:09:58;
@@ -240,8 +245,8 @@ Keep both objects alive (the library holds them weakly).
   `icon.swift` (`icon --document`); `trial.swift` scripted checks in ad hoc builds only, refused on the real notes
   folder or a folder that syncs, with no hot key of their own; `TEST=1 ./build` makes «Merum Test.app»
   (com.geragaraza.merum.test) to run beside an installed Merum.
-- Mac-only settings in the app's defaults (hot key, Keep on Top, Save To, spelling, the window's frame, the caret of
-  the note open at quit); the notes in the core's Store only. Apple's frameworks add two caches of their own, measured
+- Mac-only settings in the app's defaults (hot key, Keep on Top, Save To, spelling, the window's frame, its measured
+  minimum, the caret of the note open at quit); the notes in the core's Store only. Apple's frameworks add two caches of their own, measured
   2026-11-25 and not ours to stop: `~/Library/Caches/CloudKit/com.geragaraza.merum` (CloudKit, a signed build) and
   `~/Library/Caches/com.geragaraza.merum/com.apple.e5rt.e5bundlecache` (Vision's model, after a picture is read).
 - `./build` (ad hoc, Command Line Tools enough; full Xcode for Assets.car and docs/icon*.png), `SIGN_ID="Developer ID

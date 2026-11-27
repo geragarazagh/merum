@@ -18,6 +18,7 @@
 //   rename <file>, fieldpaste search|rename|find <file>, selectall [n], savename, jump start|middle|end   (timed)
 //   edits <n> <seed>, dirs <file>                       random typed edits; paragraph directions as JSON
 //   select <location> <length|end>                      a selection in the open note
+//   minimum                                             the window's measured minimum and the time one measure takes
 //   customize                                           Customize Toolbar… opened and closed; is the search still the bar's
 #if TRIALS
 import AppKit
@@ -298,6 +299,12 @@ import Carbon.HIToolbox
             }
             app.main.window?.layoutIfNeeded(); app.main.window?.displayIfNeeded(); CATransaction.flush()
             record(["timeit": w[1], "ms": (CACurrentMediaTime() - t0) * 1000, "notes": app.library.notes.count, "length": app.main.current?.length ?? 0])
+        case "minimum":
+            // minimum: the window's minimum as measured (Sizer), and how long one measure takes
+            let t0 = CACurrentMediaTime()
+            app.main.applyMinimum()
+            let ms = (CACurrentMediaTime() - t0) * 1000
+            record(["minimum": NSStringFromSize(app.main.minimumSize), "editorMin": app.main.editorMin, "measureMs": ms])
         case "toolbarfit":
             // toolbarfit: the narrowest window (sidebar shown, then hidden) at which every toolbar item is in the bar, not in
             // its » overflow; the split view's own minimums switched off meanwhile

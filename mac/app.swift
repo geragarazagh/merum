@@ -134,6 +134,15 @@ import AppKit
         if NSApp.activationPolicy() != .regular { NSApp.setActivationPolicy(.regular) }
         if NSApp.isHidden { NSApp.unhideWithoutActivation() }
         if w.isMiniaturized { w.deminiaturize(nil) }
+        // Back at the frame it was hidden at. While Merum is hidden it has no Dock icon, the Dock gets shorter, and the
+        // window manager refits a tiled window to the taller usable area; on the show the icon comes back a moment after
+        // the window, and the window manager refitted it again: the window came up 1-2 pt off for ~0.4 s (measured on
+        // macOS 26.6, 797 → 795 while hidden, shown at 795, 797 again 0.4 s later). Put back first, it shows at the
+        // frame it ends at. Not when the screens changed meanwhile (the frame no longer on a screen).
+        if !w.isVisible, let f = hiddenFrame, f != w.frame, NSScreen.screens.contains(where: { $0.frame.contains(f) }) {
+            w.setFrame(f, display: false)
+        }
+        hiddenFrame = nil
         bringForward(w)
         sync?.setForeground(true)   // fetches every 15 s while the window is shown
         if w.firstResponder === w || w.firstResponder == nil { main.focusEditor() }
@@ -148,6 +157,9 @@ import AppKit
             DispatchQueue.main.asyncAfter(deadline: .now() + d) { [weak self] in self?.settle() }
         }
     }
+
+    /// The window's frame when it was hidden (show: why).
+    private var hiddenFrame: NSRect?
 
     /// Until when a press to show is still being made good.
     private var showing: Date?
@@ -204,6 +216,7 @@ import AppKit
         shown = false
         sync?.setForeground(false)
         settings?.panel.orderOut(nil)
+        hiddenFrame = main.window?.frame
         main.window?.orderOut(nil)
         NSApp.setActivationPolicy(.accessory)
     }

@@ -38,20 +38,27 @@ extension NSToolbarItem.Identifier {
         return (widest + 2 * 18).rounded(.up)
     }()
     static let sidebarMax: CGFloat = 360
-    /// The smallest window: every toolbar button in the bar, never in the » overflow, and five notes in the list with
-    /// nothing cut (his recordings 2026-11-25: Apple Notes «обрезает слишком сильно»; at the minimum nothing cut, no
-    /// scroll bar where the content fits). Measured on macOS 27 with the longest default name as the title: the buttons
-    /// need 328 pt beside the sidebar (overflow began at a 510 pt window with the sidebar at 182); the editor keeps
-    /// 32 pt more for larger system text settings, 360. Height: the toolbar (52) and five two-line rows (5 x 56) = 332.
-    /// A width at which the toolbar still overflows (another setting, a new macOS) raises the minimum on the spot
-    /// (windowDidResize).
-    static var minSize: NSSize { NSSize(width: sidebarMin + editorMin, height: 332) }
-    static var editorMin: CGFloat = 360
+    /// The smallest window is worked out from what it shows, not from numbers measured on one Mac (dev/rules.md, section
+    /// 3): every toolbar item in the bar, never in the » overflow, the search as a field with its «Search» (AppKit folds
+    /// it to a magnifier when the bar is short of room), the counts line whole, five notes in the list. The toolbar's
+    /// needs are AppKit's own layout, measured on a copy of the bar in a window that is never shown (Sizer), so they stay
+    /// right with another macOS, another text size or another set of buttons; measured again when the person changes
+    /// the buttons. One minimum with the sidebar shown or hidden, as Apple Notes (its window never changes size when
+    /// its sidebar comes or goes): the sidebar at its narrowest beside the narrowest whole editor. Before 2026-11-27
+    /// the minimum was a number measured on macOS 27 (542 pt) that a width with the bar overflowing raised on the spot
+    /// by setting the frame from windowDidResize: on his 16" the search folded to its icon below ~645 pt, a window
+    /// manager's animation caught it in mid-move (a Center that went small, then grew to 808 pt), and in the monkey test
+    /// the frame it set called windowDidResize again until the stack ran out.
+    private(set) var editorMin: CGFloat = 360
+    private var minHeight: CGFloat = 332
+    var minimumSize: NSSize { NSSize(width: Self.sidebarMin + editorMin, height: minHeight) }
+    private lazy var sizer = Sizer(main: self)
     /// The first window, «как открывается текст»: TextEdit's new-window measure, his TextEdit set to 98 characters by
     /// 32 lines, in this app's font (13 pt San Francisco: 6.64 pt a character, the mean of English and Russian text;
     /// 16 pt lines): text 651 x 512 pt, with the text's insets, the toolbar and the counts line an editor of 685 x 606,
-    /// and the sidebar at a third of its range (182 + (360 - 182) / 3 = 241). 926 x 606 pt, about 54 % x 56 % of a
-    /// 1728 x 1084 pt screen.
+    /// and the sidebar at a third of its range (182 + (360 - 182) / 3 = 241): 926 x 606 pt. The measure of the text,
+    /// not of the screen, as TextEdit's: the same window on a 13" Air (about 63 % of its width) as on a big iMac. A
+    /// screen too small for it gets the most of its visible area, never less than the minimum (firstFrame).
     static let defaultSize = NSSize(width: 926, height: 606)
     static let sidebarDefault: CGFloat = 241
 
@@ -60,7 +67,7 @@ extension NSToolbarItem.Identifier {
         list = NotesListController(library: library)
         editor = EditorController(library: library)
         sidebar = NSSplitViewItem(sidebarWithViewController: list)
-        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 520),
+        let w = MerumWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 520),
                          styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
                          backing: .buffered, defer: false)
         super.init(window: w)
@@ -68,8 +75,11 @@ extension NSToolbarItem.Identifier {
         sidebar.minimumThickness = Self.sidebarMin
         sidebar.maximumThickness = Self.sidebarMax
         sidebar.canCollapse = true
+        // Showing the sidebar takes its room from the note, as in Notes, Finder and Mail: the window keeps its frame (the
+        // default grew the window to the right when the note was at its narrowest). The minimum leaves room for it.
+        sidebar.collapseBehavior = .preferResizingSiblingsWithFixedSplitView
         let main = NSSplitViewItem(viewController: editor)
-        main.minimumThickness = Self.editorMin
+        main.minimumThickness = editorMin
         split.addSplitViewItem(sidebar)
         split.addSplitViewItem(main)
         split.splitView.autosaveName = "Merum Sidebar"
@@ -80,10 +90,10 @@ extension NSToolbarItem.Identifier {
         // Nothing in Saved Application State: the window comes back by the app's own settings, not by restoration.
         w.isRestorable = false
         w.tabbingMode = .disallowed
-        w.minSize = Self.minSize
         w.titleVisibility = .visible
-        // Over every window of the Space it is called to, full-screen apps included; it never takes a Space of its own.
-        w.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
+        // Over every window of the Space it is called to, full-screen apps included; it never takes a Space of its own,
+        // so it never goes full screen either (the green button and ⌃⌘F fill the screen instead, as Fill does).
+        w.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary, .fullScreenNone]
         let tb = NSToolbar(identifier: "Merum")
         tb.delegate = self
         tb.displayMode = .iconOnly
@@ -93,13 +103,15 @@ extension NSToolbarItem.Identifier {
         tb.autosavesConfiguration = true
         w.toolbar = tb
         w.toolbarStyle = .unified
-        // The person's size and place, for good; the first time, 760 x 520 centred (the split view would size it
-        // to its parts' minimums).
+        applyMinimum()
+        // The person's size and place, for good, as AppKit keeps them (with the system's tiling state, so a window left
+        // in a tiled half comes back in it, and leaving the tile still gives back the size from before it); the first
+        // time, the default size centred.
         if !w.setFrameUsingName("Merum Window") {
-            w.setContentSize(Self.defaultSize)
-            w.center()
+            w.setFrame(Self.firstFrame(on: w.screen ?? NSScreen.main, minimum: w.minSize), display: false)
             split.splitView.setPosition(Self.sidebarDefault, ofDividerAt: 0)
         }
+        fitOnScreen()
         w.setFrameAutosaveName("Merum Window")
 
         list.onOpen = { [weak self] n in self?.open(n, focus: false) }
@@ -337,21 +349,67 @@ extension NSToolbarItem.Identifier {
 
     // MARK: window
 
+    func windowDidResize(_ notification: Notification) { fitSidebar() }
+
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         app?.hide()
         return false
     }
 
-    /// Never a toolbar button in the » overflow: a width at which one went there becomes the minimum.
-    func windowDidResize(_ notification: Notification) {
-        guard let w = window, let tb = w.toolbar else { return }
-        let spacers: Set<NSToolbarItem.Identifier> = [.flexibleSpace, .space, .sidebarTrackingSeparator]
-        let wanted = Set(tb.items.map(\.itemIdentifier)).subtracting(spacers)
-        let shown = Set((tb.visibleItems ?? []).map(\.itemIdentifier)).subtracting(spacers)
-        guard !wanted.isSubset(of: shown), w.frame.width + 10 > w.minSize.width else { return }
-        w.minSize.width = w.frame.width + 10
-        var f = w.frame; f.size.width = w.minSize.width
-        w.setFrame(f, display: true)
+    /// The minimum measured again (Sizer) and applied: to the note's split item, so that the sidebar gives up room
+    /// before the note does, and to the window, the same with the sidebar shown or hidden.
+    func applyMinimum() {
+        guard let w = window else { return }
+        defer { fitSidebar() }
+        let need = sizer.measure()
+        editorMin = need.editor
+        minHeight = need.height
+        split.splitViewItems.last?.minimumThickness = editorMin
+        w.minSize = minimumSize
+        // A window smaller than the new minimum (a button added, an old saved frame) grows to it, kept on its screen.
+        if w.frame.width < w.minSize.width - 0.5 || w.frame.height < w.minSize.height - 0.5 { fitOnScreen() }
+    }
+
+    /// The sidebar never wider than the window leaves beside the narrowest whole note. AppKit opens a hidden sidebar
+    /// (⌃⌘S, the toolbar's button, or the peek when the pointer rests at the window's edge on macOS 26) at the width it
+    /// had, and where the window no longer had room for that width beside the note it grew the window instead: by the
+    /// width of the sidebar (his recording 2026-11-27), and during the peek, from inside AppKit's own layout, into a
+    /// crash (-[NSSplitView _cancelProactivePeek] on a null pointer, the monkey test 2026-11-27). Kept within the room
+    /// on every change of the window's size, the sidebar comes back as wide as it fits, the window never moves.
+    func fitSidebar() {
+        guard let w = window else { return }
+        let room = (w.contentLayoutRect.width - editorMin).rounded(.down)
+        let most = max(Self.sidebarMin, min(Self.sidebarMax, room))
+        if sidebar.maximumThickness != most { sidebar.maximumThickness = most }
+    }
+
+    /// The frame kept within what it must be: never under the minimum, never off its screen. An autosaved frame from a
+    /// larger screen or another display arrangement is brought into the visible area here, before the window shows.
+    func fitOnScreen() {
+        guard let w = window, let screen = w.screen ?? NSScreen.main else { return }
+        // A frame inside the screen is left as it is: the window manager's tiles reach a few points past the usable area
+        // (into the Dock's margin: 805 pt high where 799 are usable on a 1440 x 900 screen, macOS 26).
+        if screen.frame.contains(w.frame) && w.frame.width >= w.minSize.width - 0.5 && w.frame.height >= w.minSize.height - 0.5 { return }
+        let v = screen.visibleFrame
+        var f = w.frame
+        f.size.width = min(max(f.width, w.minSize.width), max(v.width, w.minSize.width))
+        f.size.height = min(max(f.height, w.minSize.height), max(v.height, w.minSize.height))
+        f.origin.x = min(max(f.minX, v.minX), max(v.maxX - f.width, v.minX))
+        f.origin.y = min(max(f.minY, v.minY), max(v.maxY - f.height, v.minY))
+        if f != w.frame { w.setFrame(f, display: w.isVisible) }
+    }
+
+    /// The first window: the default size, cut to the screen's visible area less a margin on each side where the screen is
+    /// smaller than it (never below the minimum), centred as NSWindow.center() places it: a third of the way down.
+    static func firstFrame(on screen: NSScreen?, minimum: NSSize) -> NSRect {
+        let v = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: defaultSize.width, height: defaultSize.height)
+        // The margin a tiled window keeps from the screen's edges on macOS 26, so the first window never touches them.
+        let margin: CGFloat = 8
+        let w = max(minimum.width, min(defaultSize.width, v.width - 2 * margin))
+        let h = max(minimum.height, min(defaultSize.height, v.height - 2 * margin))
+        let x = (v.midX - w / 2).rounded()
+        let y = (v.minY + (v.height - h) * 2 / 3).rounded()
+        return NSRect(x: x, y: y, width: w, height: h)
     }
 
     /// The rename field, the search field and the find bar's field all edit in this one (FieldEditor: why).
@@ -377,7 +435,18 @@ extension NSToolbarItem.Identifier {
          .pin, .rename, .findInNote, .deleteNote, .space, .flexibleSpace]
     }
 
+    /// The buttons changed (Customize Toolbar…): the minimum is measured again once the bar has settled.
+    func toolbarWillAddItem(_ notification: Notification) { remeasureSoon(notification) }
+
+    private func remeasureSoon(_ n: Notification) {
+        guard (n.object as? NSToolbar) === window?.toolbar, !remeasuring else { return }
+        remeasuring = true   // one measure for the many items a bar adds at once
+        DispatchQueue.main.async { [weak self] in self?.remeasuring = false; self?.applyMinimum() }
+    }
+    private var remeasuring = false
+
     func toolbarDidRemoveItem(_ notification: Notification) {
+        remeasureSoon(notification)
         // Search taken out of the bar: its filter goes with it, or the list stays cut by a query nobody sees.
         guard let item = notification.userInfo?["item"] as? NSToolbarItem, item.itemIdentifier == .search else { return }
         searchItem?.searchField.stringValue = ""
@@ -531,6 +600,18 @@ extension NSToolbarItem.Identifier {
     @objc func searchNotes(_ sender: Any?) {
         if sidebar.isCollapsed { sidebar.animator().isCollapsed = false }
         searchItem?.beginSearchInteraction()
+    }
+}
+
+/// The main window. AppKit trims a window that reaches past the screen's usable area each time it is ordered in, and a
+/// tiled half does reach past it (the window manager's tile is a few points taller than the visible frame): on every
+/// hot-key show the window came up those points short and the window manager put it back ~0.35 s later, measured frame
+/// by frame on macOS 26.6 (805 → 799 → 805 pt). A frame that lies within the screen is left alone; one that leaves the
+/// screen is still brought back as AppKit does it.
+final class MerumWindow: NSWindow {
+    override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
+        if let s = screen ?? self.screen, s.frame.contains(frameRect) { return frameRect }
+        return super.constrainFrameRect(frameRect, to: screen)
     }
 }
 
