@@ -203,31 +203,94 @@ struct Row: Identifiable, Hashable {
         editors.openAtEnd(note)
         draft = nil
         library.lastOpen = note.id
-        // A row tapped just after Back, before SwiftUI has heard of the pop: the path still reads «editor», so setting
-        // it changes nothing, and the pop then empties it; the note was lost behind the list (OpenTests: an open 5 ms
-        // after the stack's pop, ~50-100 ms on a phone). The editor is pushed again once the pop is reported.
-        if !path.isEmpty, editors.editorLeaving { repushAfterPop = true }
-        if path.isEmpty { path = [.editor] }
+        pushEditor()
         // A note of ordinary size is counted at once, so its line shows with the note, never blank first.
         facts = note.length < 50_000 ? Facts(note.storage.string) : nil
         count(after: 0)
     }
 
-    /// A note was shown while the editor was already leaving (show).
-    @ObservationIgnored private var repushAfterPop = false
+    // MARK: the editor's push
+
+    /// A note was shown (show) and its editor has not been seen in the navigation stack since.
+    @ObservationIgnored private var opening: Date?
+    /// The pop that was under way when the note was shown (a Back just before the tap): running, and when it ended.
+    @ObservationIgnored private var popRunning = false
+    @ObservationIgnored private var popEnded: Date?
+    @ObservationIgnored private var watchQueued = false
+    @ObservationIgnored private var unheardSince: Date?
+
+    /// The editor is pushed at once, also while the list is still sliding in after a Back: SwiftUI then turns the pop
+    /// into the push, and the note is up ~0.4 s sooner than after waiting for the pop to end (simulator: keyboard up
+    /// 0.77 s after a tap 50 ms after Back, 1.15-1.45 s when waiting).
+    ///
+    /// SwiftUI does not always keep a path changed during a pop: the pop's own end writes its empty path back over it,
+    /// and the note was lost behind the list (testBackThenOpen, testDoneBackOpen, testOpenDuringPop: a tap 50-100 ms
+    /// after Back, in most runs on a loaded simulator; the pop takes ~0.5 s, so a finger gets there), after which
+    /// UIKit's stack and SwiftUI's path could part ways (three screens for a path of one, the next note opened into a
+    /// screen the editor was not in). So the open is watched once a frame until the editor is in the stack: an empty
+    /// path written meanwhile is that late pop, not the person's Back (no editor is on screen to go back from), and
+    /// the editor is pushed again once the stack is still (testLatePopWrite).
+    private func pushEditor() {
+        opening = Date()
+        unheardSince = nil
+        popEnded = nil
+        popRunning = false
+        if let tc = editors.stackTransition, !editors.editorOnTop {
+            popRunning = true
+            tc.animate(alongsideTransition: nil) { [weak self] _ in
+                self?.popRunning = false
+                self?.popEnded = Date()
+            }
+        }
+        if path.isEmpty { path = [.editor] }
+        watch()
+    }
+
+    private func watch() {
+        guard let started = opening else { return }
+        if editorArrived() { return }
+        // A stack still moving is waited for (a pop on a loaded phone can take over a second), within reason.
+        let age = Date().timeIntervalSince(started)
+        if age > 10 || (age > 2 && !editors.stackMoving) { opening = nil; unheardSince = nil; return }
+        if !editors.stackMoving {
+            if path.isEmpty {
+                // The late pop emptied the path: the editor goes up again.
+                unheardSince = nil
+                editors.focusNext = true
+                path = [.editor]
+            } else if !editors.editorOnTop {
+                // The path reads «editor» but the stack shows the list: a pop SwiftUI has not reported yet. It comes
+                // within a frame or two; should it not, the path is put in step with the stack, and pushed again.
+                let since = unheardSince ?? Date()
+                unheardSince = since
+                if Date().timeIntervalSince(since) > 0.5 { unheardSince = nil; path = [] }
+            }
+        }
+        guard !watchQueued else { return }
+        watchQueued = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0 / 60) { [weak self] in
+            self?.watchQueued = false
+            self?.watch()
+        }
+    }
+
+    /// Whether the editor being opened is in UIKit's stack, its path kept, and the pop before it over (its late
+    /// write comes just after its end): from then on the push is UIKit's, and a Back, even one mid-push, is the
+    /// person's (testBackMidPush). Also asked by the editor's host the moment it joins a screen; changes no state
+    /// SwiftUI reads.
+    @discardableResult func editorArrived(pathKept: Bool = true) -> Bool {
+        guard opening != nil, editors.editorOnTop, !pathKept || !path.isEmpty, !popRunning,
+              popEnded.map({ Date().timeIntervalSince($0) > 0.3 }) ?? true else { return false }
+        opening = nil
+        unheardSince = nil
+        return true
+    }
 
     /// Back from the editor to the list.
     func leftEditor() {
-        if repushAfterPop {
-            repushAfterPop = false
-            // The next turn: SwiftUI is still applying the pop in this one.
-            DispatchQueue.main.async { [weak self] in
-                guard let self, self.path.isEmpty, self.current != nil else { return }
-                self.editors.focusNext = true
-                self.path = [.editor]
-            }
-            return
-        }
+        // An empty path while a note is being opened: the late pop of a Back from before it (pushEditor).
+        // Not when the editor is in the stack: then it is the person's Back (a path emptied before SwiftUI pops).
+        if opening != nil, !editorArrived(pathKept: false) { watch(); return }
         refreshRows()   // the edited note's time and first text
         editors.leave()
         // An empty note goes once the list is on screen, so its row is seen leaving, as in Notes; not if the person
