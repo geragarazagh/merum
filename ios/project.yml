@@ -48,6 +48,7 @@ targets:
                 UISceneDelegateClassName: $(PRODUCT_MODULE_NAME).SceneDelegate
     dependencies:
       - target: MerumControls   # embedded in PlugIns
+      - sdk: libicucore.tbd     # u_charDirection, each paragraph's direction (shared/direction.swift), as the Mac's -licucore
     # iCloud as the Mac's (AGENTS.md, «iCloud: signing and set-up»): the one container, CloudKit, its Production
     # environment (where the schema is deployed), the key-value store, push (aps-environment from the configuration:
     # development in Debug, production in Release, the App Store build).
