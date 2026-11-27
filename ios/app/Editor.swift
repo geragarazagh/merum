@@ -424,7 +424,7 @@ final class EditorDock: UIView {
 
     // MARK: the caret
 
-    /// The caret of a note being opened (launch, the list, New Note, the Action button): always at the end of its
+    /// The caret of a note being opened (launch, the list, New Note): always at the end of its
     /// text, scrolled into view, the keyboard coming up, so typing goes on where the text ends (his decision
     /// 2026-11-26). Until then each note's caret was stored on this device and put back, so some notes opened at
     /// their start and others at their end, the same way each time.
