@@ -283,6 +283,7 @@ final class EditorDock: UIView {
         guard st.length > 0 else { return }
         st.beginEditing()
         st.setAttributes([.font: f, .foregroundColor: UIColor.label], range: NSRange(location: 0, length: st.length))
+        Direction.fix(st, around: NSRange(location: 0, length: st.length))
         st.endEditing()
     }
 
@@ -583,7 +584,9 @@ final class EditorDock: UIView {
         tv.scrollCaretIntoView(animated: true)
     }
 
-    // Every character change passes here. Text the core writes (undo, another device) takes the note's attributes;
+    // Every character change passes here. Text the core writes (undo, another device) takes the note's attributes, and
+    // the paragraphs it touches their direction (shared/direction.swift: a paragraph that begins in Hebrew or Arabic sits
+    // at the right edge, as on the Mac; a deletion too can turn one, its first letter gone or two paragraphs joined);
     // an edit nobody reported (a path of UIKit's that skips the delegate) would leave the History's ranges wrong, so
     // that note's text steps are dropped instead: the text is always right, undo of that run is lost.
     nonisolated func textStorage(_ st: NSTextStorage, willProcessEditing mask: NSTextStorage.EditActions,
@@ -593,6 +596,7 @@ final class EditorDock: UIView {
             if range.length > 0, (st.attribute(.font, at: range.location, effectiveRange: nil) as? UIFont) != font {
                 st.setAttributes(attributes, range: range)
             }
+            Direction.fix(st, around: range)
             if reported { reported = false; return }
             guard library.applying == nil, let n = views.values.first(where: { $0.textStorage === st })?.note,
                   library.contains(n) else { return }

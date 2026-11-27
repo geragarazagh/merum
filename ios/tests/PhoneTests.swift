@@ -31,9 +31,24 @@ import XCTest
         for file in ["war-and-peace", "ten-million"] { try run(file) }
     }
 
-    private func run(_ file: String) throws {
+    /// «War and Peace» with an Arabic paragraph after every tenth and a Hebrew one after every 25th (~3.3 M characters,
+    /// one paragraph in eight right to left): typing, paste and undo where each paragraph's direction is set
+    /// (shared/direction.swift).
+    func testMixedScripts() throws { try run("war-and-peace", mixed: true) }
+
+    private func run(_ file: String, mixed: Bool = false) throws {
         let url = Bundle(for: PhoneTests.self).url(forResource: file, withExtension: "txt")!
-        let text = try String(contentsOf: url, encoding: .utf8)
+        var text = try String(contentsOf: url, encoding: .utf8)
+        if mixed {
+            var out: [Substring] = []
+            for (i, p) in text.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
+                out.append(p)
+                if i % 10 == 9 { out.append("قال الأمير أندريه بهدوء: «لا أعرف ما الذي ينتظرنا غداً»، ثم نظر إلى السماء العالية.") }
+                if i % 25 == 24 { out.append("הנסיך אנדריי אמר בשקט: «אינני יודע מה מחכה לנו מחר», והביט בשמיים הגבוהים.") }
+            }
+            text = out.joined(separator: "\n")
+        }
+        let name = mixed ? file + "+arabic" : file
         let lib = Library()
         let small = Note(title: "Small", position: 1, storage: NSTextStorage(string: "Milk, bread."))
         let big = Note(title: file, position: 2, storage: NSTextStorage(string: text))
@@ -46,12 +61,12 @@ import XCTest
         defer { host.removeFromSuperview() }
         model.show(small); model.editors.showCurrent(); flush(host)
         for _ in 0..<10 { frame() }
-        log("\(file) mem.before", footprint())
+        log("\(name) mem.before", footprint())
 
-        log("\(file) open", time(host) { model.show(big); model.editors.showCurrent() })
+        log("\(name) open", time(host) { model.show(big); model.editors.showCurrent() })
         let tv = host.shown!
-        log("\(file) mem.open", footprint())
-        log("\(file) keyboard.up", time(host) { _ = tv.becomeFirstResponder() })
+        log("\(name) mem.open", footprint())
+        log("\(name) keyboard.up", time(host) { _ = tv.becomeFirstResponder() })
         for _ in 0..<10 { frame() }
 
         let len = big.length
@@ -63,20 +78,20 @@ import XCTest
                     if model.editors.textView(tv, shouldChangeTextIn: tv.selectedRange, replacementText: "ж") { tv.insertText("ж") }
                 })
             }
-            log("\(file) key.\(name)", stat(keys))
+            log("\(name) key.\(name)", stat(keys))
         }
         var scroll: [Double] = []
         tv.scrollRangeToVisible(NSRange(location: len / 2, length: 0)); frame()
         for _ in 0..<240 { scroll.append(time(host) { tv.contentOffset.y += 40 }) }
-        log("\(file) scroll.steady", stat(scroll))
-        log("\(file) mem.scrolled", footprint())
+        log("\(name) scroll.steady", stat(scroll))
+        log("\(name) mem.scrolled", footprint())
 
         // Paste the whole text into a new note through the app's paste path (the core's step, the storage directly).
         let fresh = lib.newNote()
-        log("\(file) switch.toNew", time(host) { model.show(fresh); model.editors.showCurrent() })
+        log("\(name) switch.toNew", time(host) { model.show(fresh); model.editors.showCurrent() })
         let ftv = host.shown!
         _ = ftv.becomeFirstResponder(); frame()
-        log("\(file) paste.all", time(host) { model.editors.replace(ftv.selectedRange, with: text, in: ftv, kind: .paste) })
+        log("\(name) paste.all", time(host) { model.editors.replace(ftv.selectedRange, with: text, in: ftv, kind: .paste) })
         RunLoop.main.run(until: Date().addingTimeInterval(0.1))
         var after: [Double] = []
         for _ in 0..<10 {
@@ -84,25 +99,25 @@ import XCTest
                 if model.editors.textView(ftv, shouldChangeTextIn: ftv.selectedRange, replacementText: "ж") { ftv.insertText("ж") }
             })
         }
-        log("\(file) key.afterPaste", stat(after))
+        log("\(name) key.afterPaste", stat(after))
         RunLoop.main.run(until: Date().addingTimeInterval(0.1))
-        log("\(file) undo.typing", time(host) { ftv.undoManager?.undo() })
+        log("\(name) undo.typing", time(host) { ftv.undoManager?.undo() })
         RunLoop.main.run(until: Date().addingTimeInterval(0.1))
-        log("\(file) undo.paste", time(host) { ftv.undoManager?.undo() })
+        log("\(name) undo.paste", time(host) { ftv.undoManager?.undo() })
         XCTAssertEqual(fresh.length, 0)
-        log("\(file) redo.paste", time(host) { ftv.undoManager?.redo() })
+        log("\(name) redo.paste", time(host) { ftv.undoManager?.redo() })
         XCTAssertEqual(fresh.length, (text as NSString).length)
-        log("\(file) select.all", time(host) { ftv.selectAll(nil) })
+        log("\(name) select.all", time(host) { ftv.selectAll(nil) })
         // Cut's storage half only: the pasteboard half would carry ten million characters to the Mac's clipboard
         // through Universal Clipboard.
-        log("\(file) delete.all", time(host) { model.editors.replace(ftv.selectedRange, with: "", in: ftv, kind: .cut) })
+        log("\(name) delete.all", time(host) { model.editors.replace(ftv.selectedRange, with: "", in: ftv, kind: .cut) })
         XCTAssertEqual(fresh.length, 0)
-        log("\(file) switch.back", time(host) { model.show(big); model.editors.showCurrent() })
-        log("\(file) size.up", time(host) { lib.textSize = 125 })
-        log("\(file) size.back", time(host) { lib.textSize = 100 })
+        log("\(name) switch.back", time(host) { model.show(big); model.editors.showCurrent() })
+        log("\(name) size.up", time(host) { lib.textSize = 125 })
+        log("\(name) size.back", time(host) { lib.textSize = 100 })
         // The bottom bar's counter: what it costs off the main thread once typing pauses.
-        let t = CACurrentMediaTime(); _ = Facts(text); log("\(file) counter.offMain", ms(CACurrentMediaTime() - t))
-        log("\(file) mem.end", footprint())
+        let t = CACurrentMediaTime(); _ = Facts(text); log("\(name) counter.offMain", ms(CACurrentMediaTime() - t))
+        log("\(name) mem.end", footprint())
         tv.resignFirstResponder(); ftv.resignFirstResponder()
     }
 }

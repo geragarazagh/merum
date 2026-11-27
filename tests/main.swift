@@ -1620,6 +1620,75 @@ func oldFacts(_ s: String) -> (Int, Int, Int) {
     lib.flush()
 }
 
+// MARK: paragraph direction
+
+/// Direction (shared/direction.swift): UBA P2/P3 per paragraph, and fix keeping it through edits as both editors call it.
+@MainActor func testDirection() {
+    func dirs(_ s: String) -> [Bool] {
+        var out: [Bool] = []
+        let ns = s as NSString
+        Direction.paragraphs(ns, NSRange(location: 0, length: ns.length)) { _, rtl in out.append(rtl) }
+        return out
+    }
+    func styled(_ st: NSTextStorage) -> [Int] {
+        // Each paragraph's direction as set: 1 right to left, 0 left to right, -1 none or mixed inside it.
+        var out: [Int] = []
+        let ns = st.mutableString
+        var at = 0
+        while at < ns.length {
+            let p = ns.paragraphRange(for: NSRange(location: at, length: 0))
+            var eff = NSRange()
+            let ps = st.attribute(.paragraphStyle, at: p.location, longestEffectiveRange: &eff, in: p) as? NSParagraphStyle
+            out.append(NSMaxRange(eff) < NSMaxRange(p) || ps == nil ? -1 : ps!.baseWritingDirection == .rightToLeft ? 1 : 0)
+            at = NSMaxRange(p)
+        }
+        return out
+    }
+    group("Direction: UBA P2/P3 per paragraph") {
+        eq(dirs("Hello"), [false])
+        eq(dirs("שלום עולם"), [true], "Hebrew")
+        eq(dirs("مرحبا بالعالم"), [true], "Arabic")
+        eq(dirs("123, «مرحبا» and more"), [true], "neutrals before the first strong letter")
+        eq(dirs("Привет مرحبا"), [false], "Cyrillic first")
+        eq(dirs("مرحبا Hello"), [true], "Arabic first")
+        eq(dirs("   ...  "), [false], "no strong letter: left to right")
+        eq(dirs("\u{2068}مرحبا\u{2069} Hello"), [false], "an isolate skipped (FSI…PDI)")
+        eq(dirs("\u{2067}abc\u{2069}שלום"), [true], "an isolate skipped (RLI…PDI)")
+        eq(dirs("a\nש\r\nb\rم\u{2029}x"), [false, true, false, true, false], "LF, CR LF, CR, U+2029")
+        eq(dirs("ש\n"), [true], "a break ends the paragraph; nothing after it is another")
+        eq(dirs("😀𞤀"), [true], "Adlam past the BMP (a surrogate pair) is right to left")
+        eq(dirs("😀𝐀"), [false], "a mathematical bold A past the BMP is left to right")
+        // Chunk edges (16,384 units): a surrogate pair and a CR LF split by one.
+        let pad = String(repeating: " ", count: 16_383)
+        eq(dirs(pad + "𞤀"), [true], "surrogate pair across the chunk's end")
+        eq(dirs(pad + "\r\nש"), [false, true], "CR LF across the chunk's end")
+        eq(dirs(String(repeating: "x\n", count: 20_000) + "ש").count, 20_001)
+    }
+    group("Direction: fix keeps each paragraph's direction through edits") {
+        let st = NSTextStorage(string: "Hello\nשלום\nمرحبا Hi\n")
+        Direction.fix(st, around: NSRange(location: 0, length: st.length))
+        eq(styled(st), [0, 1, 1])
+        // Typing at a paragraph's start, as an editor does: the characters come without a style, fix gives them one.
+        @MainActor func type(_ s: String, at i: Int) {
+            st.replaceCharacters(in: NSRange(location: i, length: 0), with: s)
+            Direction.fix(st, around: NSRange(location: i, length: (s as NSString).length))
+        }
+        @MainActor func delete(_ r: NSRange) {
+            st.replaceCharacters(in: r, with: "")
+            Direction.fix(st, around: NSRange(location: r.location, length: 0))
+        }
+        type("ש", at: 0); eq(styled(st), [1, 1, 1], "a Hebrew letter first turns the paragraph")
+        delete(NSRange(location: 0, length: 1)); eq(styled(st), [0, 1, 1], "and its deletion turns it back")
+        type("x", at: 3); eq(styled(st), [0, 1, 1], "typing inside keeps it")
+        let afterHello = ("Helxlo" as NSString).length
+        delete(NSRange(location: afterHello, length: 1)); eq(styled(st), [0, 1], "two paragraphs joined take the first's")
+        type("\n", at: afterHello); eq(styled(st), [0, 1, 1], "Return splits; the new paragraph is its own")
+        type("abc\nمرحبا\n", at: 0); eq(styled(st), [0, 1, 0, 1, 1], "a paste of several paragraphs")
+        st.replaceCharacters(in: NSRange(location: 0, length: st.length), with: "")
+        Direction.fix(st, around: NSRange(location: 0, length: 0)); eq(st.length, 0, "empty text: nothing to do")
+    }
+}
+
 // MARK: run
 
 @MainActor func main() async {
@@ -1632,6 +1701,7 @@ func oldFacts(_ s: String) -> (Int, Int, Int) {
         testUndoStorm(seeds: 0..<400, steps: 4000)
     } else {
         testOrdinal()
+        testDirection()
         testMerge()
         testLibrary()
         testPinned()

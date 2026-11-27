@@ -175,6 +175,13 @@ Keep both objects alive (the library holds them weakly).
   cancelled (cancel the previous count on each edit; 10 M characters: ~0.5 s off the main thread, given up within
   ~20 ms). `line` «24 characters · 4 words · ≈ 7 tokens» (Copia's line, lowercase), `lines` capitalised
   («1,234 Characters», …: the iPhone's bar is `lines.joined(separator: " · ")`).
+- `Direction` (shared/direction.swift, the one copy): each paragraph's base writing direction by UBA P2/P3 (its first
+  strong letter, isolates skipped; none: left to right), set as an explicit paragraph style, so a paragraph that begins
+  in Hebrew or Arabic sits at the right edge on both platforms (TextKit 1 left it at the left). Both editors call
+  `Direction.fix(storage, around: editedRange)` on every character change (willProcessEditing) and over the whole text
+  after giving it a new font. A paragraph wholly inside the range is written without reading its old style: reading
+  makes the storage fix that run's fallback fonts first (0.2 s on a Mac, 1 s on the iPhone simulator, for «War and
+  Peace» with Arabic paragraphs). Needs libicucore (`-licucore` in ./build and ./test, `libicucore.tbd` in project.yml).
 - `Diff.minimalReplacement(from:to:)`, `Merge.threeWay(base:local:remote:)`: used by Sync, public for tests.
 
 ### iCloud: signing and set-up (done 2026-11-25)

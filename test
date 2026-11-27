@@ -6,5 +6,5 @@
 set -e
 cd "${0:A:h}"
 t=${TMPDIR:-/tmp}/merum-tests
-swiftc -O -target arm64-apple-macos13 -o "$t" tests/main.swift shared/*.swift
+swiftc -O -target arm64-apple-macos13 -licucore -o "$t" tests/main.swift shared/*.swift
 "$t" "$@"
