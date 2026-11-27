@@ -203,14 +203,31 @@ struct Row: Identifiable, Hashable {
         editors.openAtEnd(note)
         draft = nil
         library.lastOpen = note.id
+        // A row tapped just after Back, before SwiftUI has heard of the pop: the path still reads «editor», so setting
+        // it changes nothing, and the pop then empties it; the note was lost behind the list (OpenTests: an open 5 ms
+        // after the stack's pop, ~50-100 ms on a phone). The editor is pushed again once the pop is reported.
+        if !path.isEmpty, editors.editorLeaving { repushAfterPop = true }
         if path.isEmpty { path = [.editor] }
         // A note of ordinary size is counted at once, so its line shows with the note, never blank first.
         facts = note.length < 50_000 ? Facts(note.storage.string) : nil
         count(after: 0)
     }
 
+    /// A note was shown while the editor was already leaving (show).
+    @ObservationIgnored private var repushAfterPop = false
+
     /// Back from the editor to the list.
     func leftEditor() {
+        if repushAfterPop {
+            repushAfterPop = false
+            // The next turn: SwiftUI is still applying the pop in this one.
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.path.isEmpty, self.current != nil else { return }
+                self.editors.focusNext = true
+                self.path = [.editor]
+            }
+            return
+        }
         refreshRows()   // the edited note's time and first text
         editors.leave()
         // An empty note goes once the list is on screen, so its row is seen leaving, as in Notes; not if the person

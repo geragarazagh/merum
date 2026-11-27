@@ -338,6 +338,16 @@ final class EditorDock: UIView {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0 / 60) { [weak self] in self?.tryFocus() }
     }
 
+    /// Whether the editor's screen is on its way out: the navigation stack has already put another screen on top (a
+    /// Back the model has not heard of yet).
+    var editorLeaving: Bool {
+        guard let vc = sequence(first: container as UIResponder, next: \.next).compactMap({ $0 as? UIViewController }).first,
+              let nav = vc.navigationController else { return false }
+        var mine: UIViewController = vc
+        while let p = mine.parent, p !== nav { mine = p }
+        return nav.topViewController !== mine || mine.isMovingFromParent
+    }
+
     /// The editor left the screen: the bar goes with it.
     func leave() {
         container.dock.enabled = false
