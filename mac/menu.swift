@@ -122,6 +122,7 @@ import AppKit
         view.addItem(.separator())
         view.addItem(item("Hide Sidebar", #selector(NSSplitViewController.toggleSidebar(_:)), "s", [.command, .control]))
         view.addItem(item("Notes List", #selector(MainWindow.showNotesList(_:)), "l"))
+        view.addItem(item("Customize Toolbar…", #selector(NSWindow.runToolbarCustomizationPalette(_:))))
         view.addItem(.separator())
         view.addItem(item("Zoom In", #selector(MainWindow.zoomIn(_:)), "+"))
         // ⌘= is the same key as ⌘+ without ⇧ on most layouts: it zooms in too, unseen, as in Safari.

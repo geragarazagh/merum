@@ -8,10 +8,15 @@ extension NSToolbarItem.Identifier {
     static let share = NSToolbarItem.Identifier("share")
     static let more = NSToolbarItem.Identifier("more")
     static let search = NSToolbarItem.Identifier("search")
+    static let pin = NSToolbarItem.Identifier("pin")
+    static let rename = NSToolbarItem.Identifier("rename")
+    static let findInNote = NSToolbarItem.Identifier("findInNote")
+    static let deleteNote = NSToolbarItem.Identifier("deleteNote")
 }
 
 @MainActor final class MainWindow: NSWindowController, NSWindowDelegate, NSToolbarDelegate, NSMenuItemValidation,
-                                   NSSharingServicePickerToolbarItemDelegate, NSSearchFieldDelegate, NSMenuDelegate {
+                                   NSSharingServicePickerToolbarItemDelegate, NSSearchFieldDelegate, NSMenuDelegate,
+                                   NSToolbarItemValidation {
     let library: Library
     let list: NotesListController
     let editor: EditorController
@@ -82,7 +87,10 @@ extension NSToolbarItem.Identifier {
         let tb = NSToolbar(identifier: "Merum")
         tb.delegate = self
         tb.displayMode = .iconOnly
-        tb.allowsUserCustomization = false
+        // View > Customize Toolbar… and the bar's right-click menu, as Apple Notes, Finder and Copia (his recording
+        // 2026-11-26: the buttons moved and chosen by him, only what Merum itself needs); the choice is kept by AppKit.
+        tb.allowsUserCustomization = true
+        tb.autosavesConfiguration = true
         w.toolbar = tb
         w.toolbarStyle = .unified
         // The person's size and place, for good; the first time, 760 x 520 centred (the split view would size it
@@ -318,6 +326,8 @@ extension NSToolbarItem.Identifier {
             return true
         case #selector(showNotesList(_:)):
             return true
+        case #selector(searchNotes(_:)):
+            return searchItem != nil   // Search taken out of the bar by Customize Toolbar…
         case #selector(performFindPanelAction(_:)):
             return editor.textView?.validateMenuItem(item) ?? false
         default:
@@ -361,20 +371,60 @@ extension NSToolbarItem.Identifier {
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         [.toggleSidebar, .sidebarTrackingSeparator, .newNote, .flexibleSpace, .share, .more, .search]
     }
+    /// The palette: the default buttons and the «…» menu's note commands, each one click instead of two.
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        toolbarDefaultItemIdentifiers(toolbar)
+        [.toggleSidebar, .sidebarTrackingSeparator, .newNote, .share, .more, .search,
+         .pin, .rename, .findInNote, .deleteNote, .space, .flexibleSpace]
+    }
+
+    func toolbarDidRemoveItem(_ notification: Notification) {
+        // Search taken out of the bar: its filter goes with it, or the list stays cut by a query nobody sees.
+        guard let item = notification.userInfo?["item"] as? NSToolbarItem, item.itemIdentifier == .search else { return }
+        searchItem?.searchField.stringValue = ""
+        list.search("")
+        searchItem = nil
+    }
+
+    func validateToolbarItem(_ item: NSToolbarItem) -> Bool {
+        switch item.itemIdentifier {
+        case .pin:
+            let t = pinTitle
+            item.label = t; item.toolTip = t
+            item.image = NSImage(systemSymbolName: t.hasPrefix("Unpin") ? "pin.slash" : "pin", accessibilityDescription: t)
+            return !pinTargets.isEmpty
+        case .rename, .deleteNote: return current != nil
+        case .findInNote: return editor.textView != nil
+        default: return true
+        }
+    }
+
+    private func button(_ id: NSToolbarItem.Identifier, _ title: String, _ symbol: String, _ action: Selector,
+                        tag: Int = 0) -> NSToolbarItem {
+        let item = NSToolbarItem(itemIdentifier: id)
+        item.label = title; item.paletteLabel = title; item.toolTip = title
+        item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: title)
+        item.isBordered = true
+        item.target = self
+        item.action = action
+        item.tag = tag
+        return item
     }
 
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier id: NSToolbarItem.Identifier, willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
         switch id {
         case .newNote:
-            let item = NSToolbarItem(itemIdentifier: id)
-            item.label = "New Note"; item.paletteLabel = "New Note"; item.toolTip = "New Note"
-            item.image = NSImage(systemSymbolName: "square.and.pencil", accessibilityDescription: "New Note")
-            item.isBordered = true
-            item.target = self
-            item.action = #selector(newNote(_:))
+            return button(id, "New Note", "square.and.pencil", #selector(newNote(_:)))
+        case .pin:
+            let item = button(id, "Pin", "pin", #selector(pinNotes(_:)))
+            item.paletteLabel = "Pin"
             return item
+        case .rename:
+            return button(id, "Rename", "character.cursor.ibeam", #selector(renameNote(_:)))
+        case .findInNote:
+            return button(id, "Find in Note", "text.magnifyingglass", #selector(performFindPanelAction(_:)),
+                          tag: NSTextFinder.Action.showFindInterface.rawValue)
+        case .deleteNote:
+            return button(id, "Delete Note", "trash", #selector(deleteOpenNote(_:)))
         case .share:
             let item = NSSharingServicePickerToolbarItem(itemIdentifier: id)
             item.label = "Share"; item.paletteLabel = "Share"; item.toolTip = "Share"
