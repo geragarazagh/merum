@@ -31,6 +31,24 @@ final class EditorContainer: UIView {
     /// part of the keyboard); behind the bar's own solid strip, so the guide's few points of lag mid-animation stay
     /// hidden.
     private let cover = UIView()
+    private lazy var coverTop = cover.topAnchor.constraint(equalTo: keyboardLayoutGuide.topAnchor)
+    private lazy var coverHeld = cover.topAnchor.constraint(equalTo: topAnchor)
+
+    /// Through a back swipe the cover keeps its place: UIKit's keyboard guide reports the keyboard leaving as the swipe
+    /// begins (the guide's top went to 412 over a 468 keyboard, hiding two lines of text above the bar) and coming back
+    /// if the swipe is let go; the keyboard itself only slides sideways with the screen.
+    func holdCover(_ hold: Bool) {
+        if hold {
+            guard coverTop.isActive else { return }
+            coverHeld.constant = cover.frame.minY
+            coverTop.isActive = false
+            coverHeld.isActive = true
+        } else {
+            guard coverHeld.isActive else { return }
+            coverHeld.isActive = false
+            coverTop.isActive = true
+        }
+    }
     /// Behind the navigation bar's buttons, over the text: a line scrolled up there is hidden, never drawn under the
     /// buttons (the system's soft scroll edge effect, which a text view hosted by SwiftUI gets, blurred only the status
     /// bar's 25 points; its hard style drew a divider line even with the text at its top).
@@ -53,7 +71,7 @@ final class EditorContainer: UIView {
             cover.leadingAnchor.constraint(equalTo: leadingAnchor),
             cover.trailingAnchor.constraint(equalTo: trailingAnchor),
             cover.bottomAnchor.constraint(equalTo: bottomAnchor),
-            cover.topAnchor.constraint(equalTo: keyboardLayoutGuide.topAnchor),
+            coverTop,
             topShield.topAnchor.constraint(equalTo: topAnchor),
             topShield.leadingAnchor.constraint(equalTo: leadingAnchor),
             topShield.trailingAnchor.constraint(equalTo: trailingAnchor),
@@ -155,6 +173,24 @@ final class EditorDock: UIView {
     /// area under it is added by UIKit). Set inside the keyboard's own animation (Model's keyboard observer).
     private(set) var keyboardInset: CGFloat = KeyboardBar.height
     func keyboard(frame end: CGRect, duration: Double, curve: UInt) {
+        // A back swipe: the keyboard slides away with the screen, and comes back if the swipe is let go; the text keeps
+        // its room and place meanwhile. Reported as the keyboard hiding (end at the screen's bottom) and then showing in
+        // two steps (357, then 384 points), the room went to the bar's alone, the text scrolled 293 points along with
+        // the swipe and stayed there after the swipe was let go (measured on the simulator 2026-11-27).
+        if heldForSwipe { return }
+        if let tc = editorTransition, tc.isInteractive {
+            heldForSwipe = true
+            container.holdCover(true)
+            tc.animate(alongsideTransition: nil) { [weak self] _ in
+                // The keyboard's own return comes a moment after a cancelled swipe's end.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                    guard let self else { return }
+                    self.heldForSwipe = false
+                    self.container.holdCover(false)
+                }
+            }
+            return
+        }
         // The bar alone at the screen's bottom while the text view keeps the input: the end of a finger's dismissal
         // (UIKit lets the text view go a moment after the keyboard has gone) or a hardware keyboard. It stands above
         // the home indicator then, as in the dock; over the software keyboard it has no room under it.
@@ -171,6 +207,13 @@ final class EditorDock: UIView {
         guard inset != keyboardInset else { return }
         keyboardInset = inset
         for v in views.values { Editors.setInset(inset, of: v) }
+    }
+
+    /// A back swipe is under way (keyboard(frame:)).
+    private var heldForSwipe = false
+    /// The navigation transition the editor's screen is in, if any.
+    private var editorTransition: UIViewControllerTransitionCoordinator? {
+        sequence(first: container as UIResponder, next: \.next).compactMap { $0 as? UIViewController }.first?.transitionCoordinator
     }
 
     /// The room the keyboard and the bar took last time (a first guess before the keyboard has been seen): a note
