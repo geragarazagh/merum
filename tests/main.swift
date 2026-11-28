@@ -1398,6 +1398,16 @@ func card(_ text: String, points: CGFloat = 26) -> CGImage {
         print("    Vision read the card in \(ms(t)) (the first time includes Vision's model preparation)")
         eq(read, text)
         let t2 = Date(); _ = await Paste.recognize(got); print("    again: \(ms(t2))")
+        // ⌘V held down on one copy: one decode (the same CGImage each time) and one Vision reading for all of them at
+        // once, each paste still getting the text (stress matrix 2026-11-27: 205 readings at once, 190 MB → 2.6 GB).
+        if case .image(let same) = Paste.content(of: pb) { check(same === got, "one decode per copy") } else { check(false, "image again") }
+        let t3 = Date()
+        let many = await withTaskGroup(of: String.self) { g in
+            for _ in 0..<50 { g.addTask { await Paste.recognize(got) } }
+            var all: [String] = []; for await s in g { all.append(s) }; return all
+        }
+        print("    50 at once: \(ms(t3))")
+        eq(many, Array(repeating: text, count: 50))
         // A picture with no text: nothing to put in.
         eq(await Paste.recognize(card(" ")), "")
         // HTML is read offline: nothing it names is fetched (a listener counts any connection).

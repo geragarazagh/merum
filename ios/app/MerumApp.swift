@@ -34,6 +34,7 @@ import UIKit
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
         _ = Merum.shared
+        LineFields.install()   // one-line fields take one line of sane length (LineFields.swift)
         #if DEBUG && targetEnvironment(simulator)
         SimulatorModes.runIfAsked()
         Probe.runIfAsked()

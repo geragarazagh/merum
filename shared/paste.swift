@@ -36,9 +36,53 @@ enum Paste {
         }
     }
 
-    /// The text of a picture; "" when it has none (the UI then beeps: there is nothing to put in).
+    /// The text of a picture; "" when it has none (the UI then beeps: there is nothing to put in). Calls for the same
+    /// picture while it is being read wait for that one reading instead of starting their own (see `lastPicture`).
     static func recognize(_ image: CGImage) async -> String {
-        await Recognition.text(of: image)
+        await reads.text(of: image)
+    }
+
+    /// One reading per picture at a time. Why: ⌘V held down on a copied picture made one Vision reading per key repeat,
+    /// each with its own decoded and upscaled copies, all waiting at Recognition's gate; in a test machine 205 ⌘V of
+    /// one 1016 x 493 picture took the app from 190 MB to 2.6 GB and paged the main thread into 3 s stalls (stress
+    /// matrix 2026-11-27, macOS 27). The pastes still each get the text, in order.
+    private actor Reads {
+        private var running: [ObjectIdentifier: (image: CGImage, task: Task<String, Never>)] = [:]
+        func text(of image: CGImage) async -> String {
+            let id = ObjectIdentifier(image)   // the image is held in `running` while its id is a key: no reuse
+            if let r = running[id] { return await r.task.value }
+            let task = Task.detached { await Recognition.text(of: image) }
+            running[id] = (image, task)
+            let text = await task.value
+            running[id] = nil
+            return text
+        }
+    }
+    private static let reads = Reads()
+
+    /// The picture last read off a pasteboard, by the pasteboard's name and change count, so repeated pastes of one
+    /// copy decode it once and hand `recognize` the same CGImage (the coalescing above goes by identity). Held 30 s at
+    /// most, then let go: a big screenshot is not kept in memory for as long as it stays on the clipboard.
+    private final class Memo: @unchecked Sendable {
+        private let lock = NSLock()
+        private var stamp = ""
+        private var image: CGImage?
+        func get(_ k: String) -> CGImage? { lock.lock(); defer { lock.unlock() }; return k == stamp ? image : nil }
+        func set(_ k: String, _ i: CGImage) {
+            lock.lock(); stamp = k; image = i; lock.unlock()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [self] in
+                lock.lock(); if stamp == k { stamp = ""; image = nil }; lock.unlock()
+            }
+        }
+    }
+    private static let lastPicture = Memo()
+
+    /// `read` through `lastPicture`: only a picture is remembered (text is read again: cheap, and never held).
+    private static func remembered(_ key: String, _ read: () -> Content?) -> Content? {
+        if let i = lastPicture.get(key) { return .image(i) }
+        let c = read()
+        if case .image(let i)? = c { lastPicture.set(key, i) }
+        return c
     }
 
     /// Everything in one call: the text, recognising a picture when that is what there is. nil: the pasteboard is
@@ -64,6 +108,10 @@ enum Paste {
     #if os(macOS)
     /// The form of the pasteboard's content that becomes text (see the top of this file for the order).
     static func content(of pb: NSPasteboard) -> Content? {
+        remembered("\(pb.name.rawValue)#\(pb.changeCount)") { read(pb) }
+    }
+
+    private static func read(_ pb: NSPasteboard) -> Content? {
         let types = Set(pb.types ?? [])
         // Files: every item that is a file URL.
         if let urls = pb.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL], !urls.isEmpty {
@@ -104,6 +152,10 @@ enum Paste {
     }
     #else
     static func content(of pb: UIPasteboard) -> Content? {
+        remembered("\(pb.name.rawValue)#\(pb.changeCount)") { read(pb) }
+    }
+
+    private static func read(_ pb: UIPasteboard) -> Content? {
         // Files: items whose URL is a file.
         if pb.hasURLs, let urls = pb.urls, !urls.isEmpty, urls.allSatisfy(\.isFileURL) { return .text(paths(urls)) }
         if pb.hasStrings, let s = pb.strings, !s.isEmpty { return .text(s.joined(separator: "\n")) }
