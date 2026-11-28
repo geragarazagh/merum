@@ -15,7 +15,7 @@ settings:
     TARGETED_DEVICE_FAMILY: "1"   # iPhone only; the iPhone Duo is an iPhone
     ENABLE_USER_SCRIPT_SANDBOXING: NO
     MARKETING_VERSION: "0.3"
-    CURRENT_PROJECT_VERSION: "4"   # 0.1 shipped as build 2 (live 2026-11-25); build numbers keep rising across versions
+    CURRENT_PROJECT_VERSION: "5"   # 0.1 shipped as build 2 (live 2026-11-25); build numbers keep rising across versions
     LOCALIZATION_PREFERS_STRING_CATALOGS: NO
 targets:
   Merum:

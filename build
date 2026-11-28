@@ -9,7 +9,7 @@
 set -e
 cd "${0:A:h}"
 # The version changes per release, not per build (dev/apps.md, «Version numbers»).
-name=Merum version=0.3 min=13.0
+name=Merum version=0.4 min=13.0
 id=com.geragaraza.${(L)name} app=$name.app team=4PWXU4KC48
 # A test copy beside the real one (TEST=1, ad hoc only): its own id and name, so it shares no settings with an installed
 # Merum, runs while it runs, and never syncs.
